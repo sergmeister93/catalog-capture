@@ -332,3 +332,11 @@ export async function exportInbound(
   return (await r.json()) as ExportResponse;
 }
 
+/**
+ * URL the backend serves a written CSV from. The browser hits this directly
+ * (via a hidden anchor click) to trigger a "Save to Downloads" prompt.
+ */
+export function exportDownloadUrl(csvFilename: string): string {
+  return `${API_BASE}/inbound/exports/${encodeURIComponent(csvFilename)}`;
+}
+

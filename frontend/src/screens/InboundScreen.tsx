@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   exportInbound,
+  exportDownloadUrl,
   getExtractionStatus,
   listInbound,
   type ExportRequestItem,
@@ -349,6 +350,17 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
 
       const result = await exportInbound(payload, "ui-user");
       setExportResult(result);
+
+      // Trigger a browser download of the CSV. We keep the file on the server
+      // (Railway volume) AND push it to the user's Downloads folder via a
+      // hidden anchor with `download` set. window.location.href would also
+      // work but navigates the SPA — the anchor approach leaves the page intact.
+      const a = document.createElement("a");
+      a.href = exportDownloadUrl(result.csv_filename);
+      a.download = result.csv_filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     } finally {
