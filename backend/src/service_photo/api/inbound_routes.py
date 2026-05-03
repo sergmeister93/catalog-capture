@@ -450,6 +450,43 @@ def get_inbound_image(filename: str):
     return FileResponse(candidate)
 
 
+# --- GET /api/v1/inbound/exports/{filename} ----------------------------------
+#
+# Streams a written CSV back to the browser as a download. The export POST
+# still writes to the Railway volume at /data/exports/ (durable record); this
+# endpoint is what lets the UI trigger a "save to Downloads" in Chrome.
+
+# CSV filenames are produced by us (listings_<UTC>.csv), but the input still
+# comes through the URL so we apply the same safe-filename + containment check
+# we use for /inbound/images/ to defend against path traversal.
+_SAFE_CSV_FILENAME = re.compile(r"^[A-Za-z0-9._-]+\.csv$")
+
+
+@router.get("/inbound/exports/{filename}")
+def download_inbound_export(filename: str):
+    """Stream one CSV from exports/ as an attachment download."""
+    if not _SAFE_CSV_FILENAME.match(filename):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_filename", "message": "Filename must be a simple .csv name."},
+        )
+
+    candidate = (EXPORTS_DIR / filename).resolve()
+    if not candidate.is_relative_to(EXPORTS_DIR.resolve()):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_filename", "message": "Filename resolves outside the exports/ folder."},
+        )
+    if not candidate.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "export_not_found", "message": f"No export named '{filename}'."},
+        )
+
+    # FileResponse with `filename=` adds Content-Disposition: attachment for us.
+    return FileResponse(candidate, media_type="text/csv", filename=filename)
+
+
 # --- Extraction job tracking (POST /extract + GET /extract/{job_id}) ---------
 #
 # State is in-memory — a dict keyed by job_id. Good enough for a POC: a server
