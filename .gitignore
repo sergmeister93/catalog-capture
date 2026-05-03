@@ -31,12 +31,14 @@ coverage/
 CLAUDE.local.md
 
 # --- Runtime storage (never commit) ---
-storage/
-inbound/
-exports/
-input_images/
+# Anchored to repo root so they don't shadow same-named source dirs
+# (e.g. backend/src/service_photo/exports/ is a real Python package).
+/storage/
+/inbound/
+/exports/
+/input_images/
 # Docker volume mount used for local hosted-mode testing
-_local_data/
+/_local_data/
 
 # --- Alembic local overrides ---
 alembic.ini.local
