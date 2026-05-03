@@ -9,8 +9,8 @@ This file is the **single source of truth** for where the hosted-deployment work
 ## TL;DR
 
 - ✅ **Railway deployment is LIVE.** The container is running on the `catalog-capture` service in Railway project `accurate-liberation`, region `us-west2`, mounted volume at `/data`, env vars set (`GEMINI_API_KEY`, `USE_MOCK_GEMINI=false`, `GEMINI_MODEL=gemini-2.5-flash`). End-to-end smoke test passed against real Gemini: upload → extract → review → export → CSV downloads to browser.
-- ✅ **CSV download works in the browser.** Added `GET /api/v1/inbound/exports/{filename}` (PR #2, merged) so the user can pull exported CSVs into Chrome's Downloads folder. The CSV also persists on the volume.
-- 🟡 **"Clear Data" button is implemented but pending merge.** PR #3 (`feat/clear-data-button`) is open at the GitHub URL printed below. Once merged, the user has a single-click full reset for the volume.
+- ✅ **CSV download works in the browser.** `GET /api/v1/inbound/exports/{filename}` (PR #1, merged) lets the user pull exported CSVs into Chrome's Downloads folder. The CSV also persists on the volume.
+- ✅ **"Clear Data" button shipped.** `DELETE /api/v1/inbound/data` + button on the Upload screen (PR #2, merged) gives the user a single-click full reset of `input_images/`, `inbound/`, `exports/`, plus the two browser-side localStorage keys. Endpoint has no server-side auth — relies on Cloudflare Access.
 - ❌ **Cloudflare Access is not wired up yet.** The Railway URL is currently public — anyone who finds it can use the app and burn Gemini credits. **This is the next concrete step.** Blocked on a domain decision (see "What's left" below).
 
 ---
@@ -41,7 +41,7 @@ Three PRs (one direct push, two PRs):
 2. **PR #1 (merged) — Add CSV download endpoint for hosted deployments.**
    `GET /api/v1/inbound/exports/{filename}` streams the CSV with `Content-Disposition: attachment`. Path-traversal defense mirrors the existing `/inbound/images/{filename}` pattern. Frontend triggers the download via a hidden `<a download>` click after the export POST returns. CSVs still persist on the volume.
 
-3. **PR #2 (open at writing) — Add Clear Data button on Upload screen for hosted volume reset.**
+3. **PR #2 (merged) — Add Clear Data button on Upload screen for hosted volume reset.**
    `DELETE /api/v1/inbound/data` purges every direct child file in `input_images/`, `inbound/`, `exports/` (skips subdirs defensively, keeps the dirs themselves). Returns counts. Upload screen gets a "Clear Data" button next to "Check for Images," gated by `window.confirm`. Frontend also wipes the two localStorage keys (`service-photo:active-extraction-v1`, `service-photo:inbound-review-state-v2`). **No server-side auth on the endpoint — relies on the Cloudflare Access layer planned next.**
 
 ### Bugs discovered & fixed during the Railway shake-down (do not reintroduce)
@@ -68,14 +68,14 @@ Three PRs (one direct push, two PRs):
 
 ## What's left
 
-### Step A: Merge the open Clear Data PR (~30 seconds)
+### Step A: Smoke-test the Clear Data button on the live URL (~2 minutes)
 
-PR is at `https://github.com/sergmeister93/catalog-capture/pulls`. Smoke-test on the live URL after Railway redeploys:
+PR #2 is merged; Railway will have redeployed by the start of the next session. Confirm it works end-to-end:
 1. Upload a test photo, run extraction, export.
 2. Click "Clear Data" → cancel → verify nothing changes.
 3. Click "Clear Data" → accept → verify alert shows accurate counts and the thumbnail list empties.
 4. Refresh the page → verify state stayed cleared (volume actually purged).
-5. Upload again → verify uploads still work after a clear (directories were preserved).
+5. Upload again → verify uploads still work after a clear (directories were preserved, only contents removed).
 
 ### Step B: Cloudflare Access (the auth wall)
 
@@ -154,7 +154,7 @@ Paste this into a fresh Claude session when you're ready to wire up Cloudflare A
 >
 > Two things to do this session:
 >
-> 1. If the `feat/clear-data-button` PR isn't merged yet, walk me through smoke-testing it on the live URL after merge.
+> 1. Quick smoke-test of the merged "Clear Data" button on the live URL (upload → export → clear → verify counts + that uploads still work after).
 > 2. Then walk me through Cloudflare Access setup, treating me as a non-developer. Before you start, ask whether I have an existing Cloudflare-managed domain — that decision shapes the steps.
 >
 > Don't write code unless deployment surfaces a real bug. The app is feature-complete for this phase.
