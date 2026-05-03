@@ -21,6 +21,8 @@ See [`docs/00_project_documentation.md`](docs/00_project_documentation.md) for f
 
 **Phase 7 — Open (2026-04-19)** — next-step candidates (promotion of in-memory `_jobs` to SQLite for durability, marketplace posting integrations, per-field confidence scoring, multi-reviewer queues, self-hosting Inter/Manrope) documented in [`docs/claude_code_phase7_handoff.md`](docs/claude_code_phase7_handoff.md). Confirm direction with Sergey before starting.
 
+**Phase M (Hosted Migration) — In progress (2026-05-03)** — app is containerized (root `Dockerfile`), locally verified end-to-end on Docker Desktop with real Gemini, and pushed to a private GitHub repo at https://github.com/sergmeister93/catalog-capture. Deployment target is **Railway + Cloudflare Access** (NOT the home Ubuntu mini-PC originally specced in `docs/05_self_host_migration_spec.md` — that plan was simplified). Filesystem state moved from repo-root folders to `APP_DATA_DIR` (defaults to `/data` in container, repo root in dev so `dev.bat` keeps working). Single source of truth for status, what shipped, what's left, and the next-session kickoff prompt: [`docs/handover/10_hosted_migration_status.md`](docs/handover/10_hosted_migration_status.md). **Remaining steps:** (1) Railway deploy with `/data` volume + `GEMINI_API_KEY` / `USE_MOCK_GEMINI=false` / `GEMINI_MODEL` env vars, (2) Cloudflare Access in front of the public URL with email allowlist.
+
 Full task checklist: [`docs/progress.md`](docs/progress.md)
 
 ### The pivot (read this before touching anything)
@@ -230,6 +232,20 @@ Phase 6 is closed. Phase 7 is open — see [`docs/claude_code_phase7_handoff.md`
 12. **Fonts load via Google Fonts CDN.** `index.css` `@import`s Inter + Manrope from `fonts.googleapis.com`. Works anywhere with internet; fails silently (system stack fallback) offline. If Sergey ever wants a self-contained / enterprise-air-gapped build, self-host the woff2 files and drop the `@import`. Don't add other font families without asking.
 
 13. **The "Export Approved Items" button is the single export trigger.** The footer CTA performs **bulk approve + export** in one click — it bulk-approves any not-yet-approved cards, then writes the CSV. The per-card "Approve" / "Remove Approval" toggle only affects the visual state and the approved-count; the footer button does not respect an "only export approved" mode. If a reviewer wants to exclude items, they should remove them from the batch, not just leave them unapproved. Consider tightening the footer behavior in Phase 7 if this causes confusion.
+
+### Phase M (Hosted Migration) gotchas (do not reintroduce)
+
+14. **`APP_DATA_DIR` controls where filesystem state lives.** In container mode it defaults to `/data` (mounted Railway volume); in local dev it defaults to the repo root so `dev.bat` keeps writing to `inbound/`, `input_images/`, `exports/` as before. `inbound_routes.py` reads paths from `APP_DATA_PATH` — do not hardcode `REPO_ROOT / "inbound"` etc. The export-response `csv_path` is reported relative to `APP_DATA_PATH`, not `REPO_ROOT`.
+
+15. **Single uvicorn worker is mandatory in the container.** `_jobs` in `inbound_routes.py` is in-process. The `Dockerfile` CMD pins `--workers 1`. Do not raise this until `_jobs` is promoted to durable storage (Phase 7A). Multiple workers will silently round-robin polling requests across processes and break progress reporting.
+
+16. **The `/jobs` pipeline (dormant) loads `contracts/gemini_response_schema.json` at import time.** `submit_service.py` walks parent dirs from its installed location looking for `contracts/`. The Dockerfile drops a copy at `/contracts` so the walk-up succeeds even though the active `/inbound` flow doesn't need it. If you delete `COPY contracts /contracts` from the Dockerfile, container startup will crash on import.
+
+17. **`prompts/*.md` must ship inside the installed package.** `pyproject.toml` declares `[tool.setuptools.package-data] service_photo = ["prompts/*.md", "prompts/*.txt"]`. Without this, `pip install ./backend` strips the prompts dir and the container errors with "Prompt template not found" on the first extraction. `inbound_extraction.py` resolves `PROMPT_PATH` package-relative (parents[1] from the services dir), not repo-relative.
+
+18. **Single-origin SPA serving in `main.py` skips CORS entirely.** When `FRONTEND_DIST_DIR` (or `/app/frontend_dist`, or `<repo>/frontend/dist`) exists, `main.py` mounts `/assets` and a SPA catch-all so one uvicorn process serves both the React bundle and `/api/*`. Do **not** add CORS middleware — that would mean the production deployment is misconfigured.
+
+19. **Local Docker test data lives in `_local_data/` at the project root** (gitignored). It's the host folder bind-mounted to `/data` inside the container. Don't confuse it with the legacy `exports/` / `inbound/` folders at the repo root, which are written by `dev.bat` runs only.
 
 ---
 

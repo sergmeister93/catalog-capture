@@ -1,10 +1,12 @@
 # Catalog Capture — Self-Host Migration Handover Bundle
 
-_Snapshot taken: 2026-05-03._
+_Original snapshot: 2026-05-03. Updated: 2026-05-03 (post-implementation)._
 
-This folder is a **point-in-time copy** of the files needed to plan Phase 2 of the self-host migration with a fresh model (GPT or otherwise). Files are numbered in the order you should share them.
+> 🟢 **Status update — read first:** The migration has progressed past the planning phase. The app is containerized, locally verified end-to-end on Docker, and pushed to a private GitHub repo. The deployment target shifted from "home Ubuntu mini-PC + Cloudflare Tunnel" (the original spec in `01_…spec.md`) to **Railway + Cloudflare Access** for lower friction. **Read [`10_hosted_migration_status.md`](10_hosted_migration_status.md) for the current state and the next-session kickoff prompt.** The numbered planning files (01–09) below are kept for historical reference but several are now stale.
 
-> ⚠️ These are **copies**, not the source of truth. If you make edits during planning, edit the originals (paths listed below) and re-snapshot, or the live repo will drift from this bundle.
+This folder was originally a **point-in-time copy** of the files needed to plan Phase 2 of the self-host migration with a fresh model. Files are numbered in the order you would have shared them during the planning round.
+
+> ⚠️ Files 05, 06, 07 are stale — they reflect the pre-migration shape of the code. For current source, read the live files in `backend/src/service_photo/`.
 
 ---
 
@@ -23,6 +25,8 @@ This folder is a **point-in-time copy** of the files needed to plan Phase 2 of t
 | 9 | `09_dev.bat` | `dev.bat` (repo root) | Current Windows launcher — the Linux equivalent is what we're building |
 
 ## Suggested kickoff prompt for the new chat
+
+> _For continuing the work as it stands today, use the kickoff prompt in [`10_hosted_migration_status.md`](10_hosted_migration_status.md) instead. The prompt below is from the original planning round and is preserved for history._
 
 > I'm planning Phase 2 of a self-host migration for a small POC web app called Catalog Capture. The tech spec is in the first file (`01_self_host_migration_spec.md`); read that first, then the supporting context. After you've read everything, I want you to (a) flag anything in the spec that's wrong, ambiguous, or under-scoped, (b) propose a concrete implementation order for Phase M2 (containerization), and (c) tell me what you'd want to know before writing the actual Dockerfiles and `docker-compose.yml`. Don't write any code yet.
 
