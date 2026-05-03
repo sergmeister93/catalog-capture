@@ -487,6 +487,50 @@ def download_inbound_export(filename: str):
     return FileResponse(candidate, media_type="text/csv", filename=filename)
 
 
+# --- DELETE /api/v1/inbound/data ---------------------------------------------
+#
+# Full reset for the hosted POC: wipes every file the app has ever written to
+# the persistent volume (input_images/, inbound/, exports/). The directories
+# themselves are kept so the app keeps writing to the same paths after the
+# clear. No DB rows to clean up — the active pipeline is filesystem-only.
+#
+# This is destructive and irreversible. The frontend gates it behind a
+# window.confirm, but we don't add server-side guards (no auth, no soft-
+# delete) because the whole app is gated by Cloudflare Access in hosted mode.
+
+class ClearDataResponse(BaseModel):
+    """Counts of files removed from each managed directory."""
+    input_images_deleted: int
+    inbound_deleted: int
+    exports_deleted: int
+
+
+def _purge_dir_contents(directory: Path) -> int:
+    """
+    Delete every direct child file in `directory`. Returns the count removed.
+    Skips subdirectories defensively (none should exist today, but if they
+    appear later we don't want to recurse into something unexpected).
+    """
+    if not directory.exists():
+        return 0
+    removed = 0
+    for entry in directory.iterdir():
+        if entry.is_file():
+            entry.unlink()
+            removed += 1
+    return removed
+
+
+@router.delete("/inbound/data", response_model=ClearDataResponse)
+def clear_all_data() -> ClearDataResponse:
+    """Wipe input_images/, inbound/, and exports/ contents on the volume."""
+    return ClearDataResponse(
+        input_images_deleted=_purge_dir_contents(INPUT_IMAGES_DIR),
+        inbound_deleted=_purge_dir_contents(INBOUND_DIR),
+        exports_deleted=_purge_dir_contents(EXPORTS_DIR),
+    )
+
+
 # --- Extraction job tracking (POST /extract + GET /extract/{job_id}) ---------
 #
 # State is in-memory — a dict keyed by job_id. Good enough for a POC: a server
