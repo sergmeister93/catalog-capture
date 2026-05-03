@@ -1,0 +1,73 @@
+%% Catalog Capture — System Architecture
+%% Executive view: 7 logical groups, left-to-right flow
+%% Render with Mermaid Live Editor, then export SVG/PNG for slides.
+
+flowchart LR
+    classDef user     fill:#EEF2F7,stroke:#64748B,stroke-width:1px,color:#0F172A
+    classDef ui       fill:#FFFFFF,stroke:#334155,stroke-width:1.2px,color:#0F172A
+    classDef app      fill:#F8FAFC,stroke:#1E3A8A,stroke-width:1.2px,color:#0F172A
+    classDef ai       fill:#FAF5FF,stroke:#6D28D9,stroke-width:1.2px,color:#1E1B4B
+    classDef data     fill:#F0FDF4,stroke:#047857,stroke-width:1.2px,color:#064E3B
+    classDef ext      fill:#FFF7ED,stroke:#B45309,stroke-width:1.2px,color:#3F2A06
+    classDef dormant  fill:#F1F5F9,stroke:#94A3B8,stroke-width:1px,color:#475569,stroke-dasharray: 4 3
+
+    U["Reviewer<br/>(Operator)"]:::user
+
+    subgraph UI["User Interface — React / Vite SPA"]
+        direction TB
+        UP["Upload Screen<br/>drag &amp; drop photos"]:::ui
+        RV["Review Screen<br/>edit · price · approve"]:::ui
+        BH["Batch History"]:::ui
+    end
+
+    subgraph APP["Application Layer — FastAPI (Python 3.12)"]
+        direction TB
+        RT["/api/v1/inbound/* routes"]:::app
+        SVC["Inbound Extraction Service<br/>orchestration · progress callbacks"]:::app
+        JOBS["In-memory Job Tracker<br/>_jobs dict"]:::app
+        EXP["CSV Export Service"]:::app
+    end
+
+    subgraph AI["AI Processing Layer"]
+        direction TB
+        GEM["Google Gemini 2.x<br/>multimodal extraction + pricing<br/>(single grounded call)"]:::ai
+        GS["Google Search Grounding<br/>live market pricing"]:::ext
+    end
+
+    subgraph DATA["Data / File Storage (local filesystem)"]
+        direction TB
+        IN["input_images/<br/>raw photos"]:::data
+        ART["inbound/<br/>extraction JSON artifacts"]:::data
+        OUT["exports/<br/>listings_*.csv"]:::data
+    end
+
+    subgraph LEGACY["Dormant DB Pipeline (code retained, UI inactive)"]
+        direction TB
+        PG[("PostgreSQL<br/>12 tables · Alembic")]:::dormant
+        DBR["/jobs/* routes"]:::dormant
+    end
+
+    U --> UP
+    U --> RV
+    U --> BH
+
+    UP -->|"upload / list"| RT
+    RV -->|"trigger extract · poll · export"| RT
+    BH -->|"list batches"| RT
+
+    RT --> SVC
+    RT --> JOBS
+    RT --> EXP
+
+    SVC -->|"image + prompt"| GEM
+    GEM <-->|"grounded web lookups"| GS
+    GEM -->|"structured JSON<br/>(extraction + pricing)"| SVC
+
+    RT <-->|"read / write"| IN
+    SVC -->|"write artifact"| ART
+    RV -->|"render cards from"| ART
+    EXP -->|"read approved"| ART
+    EXP -->|"write CSV"| OUT
+    U -.->|"download"| OUT
+
+    DBR -.-> PG

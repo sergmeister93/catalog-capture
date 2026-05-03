@@ -1,0 +1,41 @@
+# Keep the build context lean — these directories either aren't needed in
+# the image or would balloon the upload to the daemon.
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.venv/
+**/venv/
+backend/.venv/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local user data — must NOT be baked into the image. Production reads
+# these from the mounted /data volume instead.
+input_images/
+inbound/
+exports/
+storage/
+test_data/
+
+# Local secrets / env files. Real Railway env injects vars directly.
+.env
+.env.*
+**/.env
+
+# Editor / OS noise
+.git/
+.github/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs aren't needed in the runtime image.
+docs/
+handover/
+*.md

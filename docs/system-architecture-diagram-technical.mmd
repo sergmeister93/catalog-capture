@@ -1,0 +1,85 @@
+%% Catalog Capture — Technical Architecture (detailed)
+%% For engineering review. Render with Mermaid Live Editor.
+
+flowchart LR
+    classDef ui      fill:#FFFFFF,stroke:#334155,color:#0F172A
+    classDef app     fill:#F8FAFC,stroke:#1E3A8A,color:#0F172A
+    classDef ai      fill:#FAF5FF,stroke:#6D28D9,color:#1E1B4B
+    classDef data    fill:#F0FDF4,stroke:#047857,color:#064E3B
+    classDef ext     fill:#FFF7ED,stroke:#B45309,color:#3F2A06
+    classDef dormant fill:#F1F5F9,stroke:#94A3B8,color:#475569,stroke-dasharray: 4 3
+
+    U["Reviewer"]
+
+    subgraph FE["Frontend — Vite · React · TypeScript"]
+        direction TB
+        APPX["App.tsx<br/>hash router"]:::ui
+        INB["InboundScreen.tsx<br/>Upload / Review / Batches"]:::ui
+        APIM["api/inbound.ts<br/>fetch client"]:::ui
+        LS[("localStorage<br/>review-state-v2")]:::ui
+    end
+
+    subgraph BE["Backend — FastAPI · Uvicorn (Python 3.12)"]
+        direction TB
+        MAIN["main.py<br/>app + CORS + error handler"]:::app
+        IR["api/inbound_routes.py<br/>• GET  /inbound<br/>• GET/POST /input-images<br/>• GET  /images/{file}<br/>• GET  /batches<br/>• POST /extract  + /extract/{id}<br/>• POST /export"]:::app
+        IEX["services/inbound_extraction.py<br/>folder scan · per-image call<br/>progress callbacks"]:::app
+        JOBS["in-memory _jobs dict<br/>(daemon thread)"]:::app
+        EXPS["services/export_service<br/>CSV writer · 9 pricing cols"]:::app
+        RGM["integrations/real_gemini.py<br/>google-genai client"]:::app
+        CFG["core/config.py<br/>.env (abs path)"]:::app
+    end
+
+    subgraph CON["Contracts"]
+        direction TB
+        OAS["openapi spec"]:::app
+        GSCH["gemini_response_schema.json"]:::app
+        CSCH["csv_export_schema.md"]:::app
+    end
+
+    subgraph AIL["AI Layer"]
+        direction TB
+        GEM["Gemini 2.x multimodal<br/>extraction + pricing (single pass)"]:::ai
+        GSG["Google Search grounding<br/>types.Tool(google_search=...)"]:::ext
+    end
+
+    subgraph FS["Filesystem"]
+        direction TB
+        INP[("input_images/")]:::data
+        INBF[("inbound/<br/>extraction_*.json")]:::data
+        EXPF[("exports/<br/>listings_*.csv")]:::data
+    end
+
+    subgraph LEG["Dormant DB Pipeline"]
+        direction TB
+        RTS["api/routes.py<br/>/jobs/* (8 endpoints)"]:::dormant
+        SVCS["job · review · approval ·<br/>export · submit services"]:::dormant
+        ORM["SQLAlchemy models<br/>12 tables"]:::dormant
+        PG[("PostgreSQL 15<br/>Docker · Alembic")]:::dormant
+    end
+
+    CLI["scripts/run_gemini_extraction.py<br/>(extract.bat)"]:::app
+
+    U --> APPX --> INB --> APIM
+    INB <--> LS
+    APIM -->|"HTTP/JSON"| MAIN --> IR
+    IR --> IEX --> RGM --> GEM
+    GEM <--> GSG
+    IR --> JOBS
+    IEX --> JOBS
+    IR --> EXPS
+    IR <--> INP
+    IEX --> INBF
+    INB -->|"GET /inbound"| IR
+    IR -->|"serve image"| INP
+    EXPS --> INBF
+    EXPS --> EXPF
+    U -.->|"download"| EXPF
+    CLI --> IEX
+    CFG -.-> RGM
+    IR -.->|"validates vs"| GSCH
+    EXPS -.->|"columns from"| CSCH
+    MAIN -.-> OAS
+
+    RTS -.-> SVCS -.-> ORM -.-> PG
+    MAIN -.-> RTS

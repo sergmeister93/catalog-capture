@@ -1,0 +1,1277 @@
+openapi: 3.0.3
+
+info:
+  title: Service Photo POC API
+  version: 0.1.0
+  description: >
+    Backend API for the Service Photo POC.
+    Manages the full listing job lifecycle: job creation, image registration,
+    AI submission, human review, approval, and CSV export.
+    Follows a draft/reviewed two-layer content model aligned to the physical schema.
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development server
+
+tags:
+  - name: Jobs
+    description: Listing job lifecycle management
+  - name: Images
+    description: Job image registration
+  - name: Review
+    description: Draft content retrieval and reviewed content submission
+  - name: Approval
+    description: Job approval gate
+  - name: Export
+    description: Approved job export
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Job creation
+  # ---------------------------------------------------------------------------
+  /jobs:
+    post:
+      operationId: createListingJob
+      tags: [Jobs]
+      summary: Create a listing job
+      description: >
+        Creates a new listing job record in `initialized` status.
+        One job represents one used item.
+        A status history entry is inserted automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobInput'
+      responses:
+        '201':
+          description: Job created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListingJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Job retrieval
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}:
+    get:
+      operationId: getJobById
+      tags: [Jobs]
+      summary: Get job by ID
+      description: >
+        Returns the listing job record with its current status, audit fields,
+        associated images, and status history.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListingJobDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Image registration
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}/images:
+    post:
+      operationId: registerJobImage
+      tags: [Images]
+      summary: Register an image for a job
+      description: >
+        Registers image metadata for a file already written to storage.
+        Binary files are stored outside the database; this endpoint records
+        the path, ordering, and audit metadata.
+        Job must not be in a terminal status (approved, exported, rejected).
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterImageInput'
+      responses:
+        '201':
+          description: Image registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListingJobImage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: image_order conflicts with an existing image for this job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Submit to AI
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}/submit:
+    post:
+      operationId: submitJobToAI
+      tags: [Jobs]
+      summary: Submit a job to AI for analysis
+      description: >
+        Triggers the AI analysis workflow for the job.
+        Job status transitions: initialized → submitted_to_ai.
+        The backend assembles the prompt and registered images, calls Gemini,
+        validates the response, writes draft content rows, and transitions
+        the job to ai_response_received → ready_for_review.
+        Each status transition is recorded in listing_job_status_history.
+        If AI call fails, status is set to ai_error.
+        If response validation fails, status is set to validation_failed.
+        Job must be in `initialized` status with at least one registered image.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitJobInput'
+      responses:
+        '200':
+          description: AI submission accepted; returns updated job record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListingJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Job is not in a submittable status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Review payload (draft + review content combined)
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}/review-payload:
+    get:
+      operationId: getReviewPayload
+      tags: [Review]
+      summary: Get the full review payload for a job
+      description: >
+        Returns all draft and reviewed content for a job in a single response.
+        Includes the job record, registered images, draft layer (AI-generated),
+        and review layer (human-edited). Null sections indicate content has not
+        yet been written. Job must be in ready_for_review, under_review,
+        approved, or exported status.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Review payload returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewPayload'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Job is not yet ready for review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Save reviewed content
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}/review:
+    put:
+      operationId: saveReviewedContent
+      tags: [Review]
+      summary: Save reviewed content for a job
+      description: >
+        Upserts reviewed content into one or more review layer tables.
+        Each section (overview, description, specifications, accessories) is
+        independently optional in a single call, allowing per-section saves.
+        Job status transitions to under_review if currently ready_for_review.
+        All provided sections are written atomically. Does not approve the job;
+        use POST /jobs/{job_id}/approve after review is complete.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveReviewInput'
+      responses:
+        '200':
+          description: Reviewed content saved; returns updated review sections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Job status does not permit review editing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Approve job
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}/approve:
+    post:
+      operationId: approveJob
+      tags: [Approval]
+      summary: Approve a job
+      description: >
+        Runs the approval validation gate and transitions the job to `approved`
+        status if all required reviewed content is present and valid.
+        See approval_validation_rules.md for the full gate specification.
+        Required: listing_review_overview (product_name + condition_summary),
+        listing_review_description (short_title + description_text),
+        listing_review_specifications (at least one meaningful spec field),
+        listing_review_accessories (included_accessories_text).
+        Job must be in under_review status.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveJobInput'
+      responses:
+        '200':
+          description: Job approved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListingJob'
+        '400':
+          description: Approval validation failed; includes list of failing rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Job is not in under_review status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---------------------------------------------------------------------------
+  # Export job
+  # ---------------------------------------------------------------------------
+  /jobs/{job_id}/export:
+    post:
+      operationId: exportJob
+      tags: [Export]
+      summary: Export an approved job
+      description: >
+        Generates a CSV export from the reviewed content layer only.
+        Draft layer content is never used in export output.
+        Creates a listing_exports record with the file path and a
+        JSON snapshot of the exported payload.
+        Job status transitions to `exported`.
+        Job must be in `approved` status.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportJobInput'
+      responses:
+        '201':
+          description: Export generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListingExport'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Job is not in approved status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      description: UUID of the listing job
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request payload or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Core job record
+    # -------------------------------------------------------------------------
+    ListingJob:
+      type: object
+      description: Primary listing job record.
+      required:
+        - job_id
+        - job_number
+        - created_at
+        - updated_at
+        - status
+        - is_reviews_enriched
+        - is_price_enriched
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        job_number:
+          type: string
+          description: Human-friendly unique identifier (application-generated)
+          example: JOB-20240901-001
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          nullable: true
+        reviewed_by:
+          type: string
+          nullable: true
+        approved_by:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        item_category:
+          type: string
+          nullable: true
+          description: "Example: camera body, lens, accessory"
+        is_reviews_enriched:
+          type: boolean
+          default: false
+        is_price_enriched:
+          type: boolean
+          default: false
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        exported_at:
+          type: string
+          format: date-time
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    ListingJobDetail:
+      description: Job record with associated images and status history.
+      allOf:
+        - $ref: '#/components/schemas/ListingJob'
+        - type: object
+          required:
+            - images
+            - status_history
+          properties:
+            images:
+              type: array
+              items:
+                $ref: '#/components/schemas/ListingJobImage'
+            status_history:
+              type: array
+              items:
+                $ref: '#/components/schemas/StatusHistoryEntry'
+
+    JobStatus:
+      type: string
+      description: >
+        Workflow state of the listing job.
+        Core: uploaded → initialized → submitted_to_ai → ai_response_received
+              → ready_for_review → under_review → approved → exported.
+        Exception: validation_failed | ai_error | needs_rework | rejected.
+      enum:
+        - uploaded
+        - initialized
+        - submitted_to_ai
+        - ai_response_received
+        - ready_for_review
+        - under_review
+        - approved
+        - exported
+        - validation_failed
+        - ai_error
+        - needs_rework
+        - rejected
+
+    # -------------------------------------------------------------------------
+    # Image
+    # -------------------------------------------------------------------------
+    ListingJobImage:
+      type: object
+      required:
+        - image_id
+        - job_id
+        - file_name
+        - file_path
+        - file_type
+        - image_order
+        - is_primary
+        - uploaded_at
+      properties:
+        image_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        file_name:
+          type: string
+        file_path:
+          type: string
+          description: Object storage key or filesystem path
+        file_type:
+          type: string
+          example: image/jpeg
+        file_size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+        image_order:
+          type: integer
+          description: Controls prompt ordering and UI display sequence
+          minimum: 1
+        is_primary:
+          type: boolean
+          default: false
+          description: Marks the lead/cover image for the listing
+        uploaded_at:
+          type: string
+          format: date-time
+        uploaded_by:
+          type: string
+          nullable: true
+        checksum:
+          type: string
+          nullable: true
+
+    # -------------------------------------------------------------------------
+    # Status history
+    # -------------------------------------------------------------------------
+    StatusHistoryEntry:
+      type: object
+      required:
+        - status_history_id
+        - job_id
+        - new_status
+        - changed_at
+      properties:
+        status_history_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        old_status:
+          $ref: '#/components/schemas/JobStatus'
+          nullable: true
+        new_status:
+          $ref: '#/components/schemas/JobStatus'
+        changed_at:
+          type: string
+          format: date-time
+        changed_by:
+          type: string
+          nullable: true
+        change_reason:
+          type: string
+          nullable: true
+
+    # -------------------------------------------------------------------------
+    # Draft layer schemas (AI-generated, read-only after creation)
+    # -------------------------------------------------------------------------
+    DraftOverview:
+      type: object
+      required:
+        - draft_overview_id
+        - job_id
+        - created_at
+      properties:
+        draft_overview_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        product_name:
+          type: string
+          nullable: true
+        brand:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        product_family:
+          type: string
+          nullable: true
+        variant:
+          type: string
+          nullable: true
+        mount_type:
+          type: string
+          nullable: true
+        serial_number_visible:
+          type: string
+          nullable: true
+          description: Visible serial only; not inferred
+        condition_summary:
+          type: string
+          nullable: true
+        confidence_notes:
+          type: string
+          nullable: true
+        raw_source_payload:
+          type: object
+          nullable: true
+          description: Raw extracted block from Gemini (JSONB); for traceability only
+        created_at:
+          type: string
+          format: date-time
+
+    DraftDescription:
+      type: object
+      required:
+        - draft_description_id
+        - job_id
+        - created_at
+      properties:
+        draft_description_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        short_title:
+          type: string
+          nullable: true
+        description_text:
+          type: string
+          nullable: true
+        visible_wear_notes:
+          type: string
+          nullable: true
+        key_selling_points:
+          type: string
+          nullable: true
+        confidence_notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    DraftSpecifications:
+      type: object
+      required:
+        - draft_specifications_id
+        - job_id
+        - created_at
+      properties:
+        draft_specifications_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        sensor_format:
+          type: string
+          nullable: true
+        megapixels:
+          type: number
+          format: float
+          nullable: true
+        lens_mount:
+          type: string
+          nullable: true
+        focal_length:
+          type: string
+          nullable: true
+        aperture:
+          type: string
+          nullable: true
+        iso_range:
+          type: string
+          nullable: true
+        shutter_range:
+          type: string
+          nullable: true
+        video_capabilities:
+          type: string
+          nullable: true
+        storage_media:
+          type: string
+          nullable: true
+        connectivity:
+          type: string
+          nullable: true
+        weight_grams:
+          type: integer
+          nullable: true
+        other_specifications:
+          type: object
+          nullable: true
+          description: Flexible JSONB field for product-type-specific specs
+        confidence_notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    DraftAccessories:
+      type: object
+      required:
+        - draft_accessories_id
+        - job_id
+        - created_at
+      properties:
+        draft_accessories_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        included_accessories_text:
+          type: string
+          nullable: true
+        inferred_accessories_text:
+          type: string
+          nullable: true
+        missing_typical_accessories_text:
+          type: string
+          nullable: true
+        confidence_notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Review layer schemas (human-edited, source of truth for export)
+    # -------------------------------------------------------------------------
+    ReviewOverview:
+      type: object
+      required:
+        - review_overview_id
+        - job_id
+        - product_name
+        - condition_summary
+        - last_edited_at
+      properties:
+        review_overview_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        product_name:
+          type: string
+          description: Required for approval
+        brand:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        product_family:
+          type: string
+          nullable: true
+        variant:
+          type: string
+          nullable: true
+        mount_type:
+          type: string
+          nullable: true
+        serial_number_visible:
+          type: string
+          nullable: true
+        condition_summary:
+          type: string
+          description: Required for approval
+        review_notes:
+          type: string
+          nullable: true
+        last_edited_at:
+          type: string
+          format: date-time
+        last_edited_by:
+          type: string
+          nullable: true
+
+    ReviewDescription:
+      type: object
+      required:
+        - review_description_id
+        - job_id
+        - short_title
+        - description_text
+        - last_edited_at
+      properties:
+        review_description_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        short_title:
+          type: string
+          description: Required for approval
+        description_text:
+          type: string
+          description: Required for approval
+        visible_wear_notes:
+          type: string
+          nullable: true
+        key_selling_points:
+          type: string
+          nullable: true
+        review_notes:
+          type: string
+          nullable: true
+        last_edited_at:
+          type: string
+          format: date-time
+        last_edited_by:
+          type: string
+          nullable: true
+
+    ReviewSpecifications:
+      type: object
+      required:
+        - review_specifications_id
+        - job_id
+        - last_edited_at
+      description: >
+        At least one meaningful specification field must be non-null and non-blank
+        for approval. See approval_validation_rules.md for the full list of
+        qualifying fields.
+      properties:
+        review_specifications_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        sensor_format:
+          type: string
+          nullable: true
+        megapixels:
+          type: number
+          format: float
+          nullable: true
+        lens_mount:
+          type: string
+          nullable: true
+        focal_length:
+          type: string
+          nullable: true
+        aperture:
+          type: string
+          nullable: true
+        iso_range:
+          type: string
+          nullable: true
+        shutter_range:
+          type: string
+          nullable: true
+        video_capabilities:
+          type: string
+          nullable: true
+        storage_media:
+          type: string
+          nullable: true
+        connectivity:
+          type: string
+          nullable: true
+        weight_grams:
+          type: integer
+          nullable: true
+        other_specifications:
+          type: object
+          nullable: true
+        review_notes:
+          type: string
+          nullable: true
+        last_edited_at:
+          type: string
+          format: date-time
+        last_edited_by:
+          type: string
+          nullable: true
+
+    ReviewAccessories:
+      type: object
+      required:
+        - review_accessories_id
+        - job_id
+        - included_accessories_text
+        - last_edited_at
+      properties:
+        review_accessories_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        included_accessories_text:
+          type: string
+          description: Required for approval
+        inferred_accessories_text:
+          type: string
+          nullable: true
+        missing_typical_accessories_text:
+          type: string
+          nullable: true
+        review_notes:
+          type: string
+          nullable: true
+        last_edited_at:
+          type: string
+          format: date-time
+        last_edited_by:
+          type: string
+          nullable: true
+
+    # -------------------------------------------------------------------------
+    # Composite payloads
+    # -------------------------------------------------------------------------
+    DraftContent:
+      type: object
+      description: All draft (AI-generated) content sections for a job.
+      properties:
+        overview:
+          $ref: '#/components/schemas/DraftOverview'
+          nullable: true
+        description:
+          $ref: '#/components/schemas/DraftDescription'
+          nullable: true
+        specifications:
+          $ref: '#/components/schemas/DraftSpecifications'
+          nullable: true
+        accessories:
+          $ref: '#/components/schemas/DraftAccessories'
+          nullable: true
+
+    ReviewContent:
+      type: object
+      description: All reviewed (human-edited) content sections for a job.
+      properties:
+        overview:
+          $ref: '#/components/schemas/ReviewOverview'
+          nullable: true
+        description:
+          $ref: '#/components/schemas/ReviewDescription'
+          nullable: true
+        specifications:
+          $ref: '#/components/schemas/ReviewSpecifications'
+          nullable: true
+        accessories:
+          $ref: '#/components/schemas/ReviewAccessories'
+          nullable: true
+
+    ReviewPayload:
+      type: object
+      description: >
+        Full review payload combining job, images, draft layer, and review layer.
+        Used by the review UI to render the editing interface.
+      required:
+        - job
+        - images
+        - draft
+        - review
+      properties:
+        job:
+          $ref: '#/components/schemas/ListingJob'
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListingJobImage'
+        draft:
+          $ref: '#/components/schemas/DraftContent'
+        review:
+          $ref: '#/components/schemas/ReviewContent'
+
+    # -------------------------------------------------------------------------
+    # Export
+    # -------------------------------------------------------------------------
+    ListingExport:
+      type: object
+      required:
+        - export_id
+        - job_id
+        - export_type
+        - export_file_name
+        - export_file_path
+        - exported_at
+        - export_status
+      properties:
+        export_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        export_type:
+          type: string
+          enum: [csv]
+        export_file_name:
+          type: string
+        export_file_path:
+          type: string
+        exported_at:
+          type: string
+          format: date-time
+        exported_by:
+          type: string
+          nullable: true
+        export_status:
+          type: string
+          enum: [success, failed]
+        export_payload_snapshot:
+          type: object
+          nullable: true
+          description: Exact reviewed content payload at time of export (JSONB)
+
+    # -------------------------------------------------------------------------
+    # Request input schemas
+    # -------------------------------------------------------------------------
+    CreateJobInput:
+      type: object
+      properties:
+        item_category:
+          type: string
+          nullable: true
+          description: "Example: camera body, lens, accessory"
+        created_by:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    RegisterImageInput:
+      type: object
+      required:
+        - file_name
+        - file_path
+        - file_type
+        - image_order
+      properties:
+        file_name:
+          type: string
+        file_path:
+          type: string
+          description: Storage key or path where the binary was written
+        file_type:
+          type: string
+          example: image/jpeg
+        file_size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+        image_order:
+          type: integer
+          minimum: 1
+          description: Must be unique per job; controls prompt and UI sequence
+        is_primary:
+          type: boolean
+          default: false
+        uploaded_by:
+          type: string
+          nullable: true
+        checksum:
+          type: string
+          nullable: true
+
+    SubmitJobInput:
+      type: object
+      properties:
+        submitted_by:
+          type: string
+          nullable: true
+
+    SaveReviewInput:
+      type: object
+      description: >
+        Upserts one or more reviewed content sections.
+        At least one section must be provided.
+        Each section present is written atomically.
+      minProperties: 1
+      properties:
+        reviewed_by:
+          type: string
+          nullable: true
+        overview:
+          $ref: '#/components/schemas/ReviewOverviewInput'
+        description:
+          $ref: '#/components/schemas/ReviewDescriptionInput'
+        specifications:
+          $ref: '#/components/schemas/ReviewSpecificationsInput'
+        accessories:
+          $ref: '#/components/schemas/ReviewAccessoriesInput'
+
+    ReviewOverviewInput:
+      type: object
+      required:
+        - product_name
+        - condition_summary
+      properties:
+        product_name:
+          type: string
+          minLength: 1
+        brand:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        product_family:
+          type: string
+          nullable: true
+        variant:
+          type: string
+          nullable: true
+        mount_type:
+          type: string
+          nullable: true
+        serial_number_visible:
+          type: string
+          nullable: true
+        condition_summary:
+          type: string
+          minLength: 1
+        review_notes:
+          type: string
+          nullable: true
+
+    ReviewDescriptionInput:
+      type: object
+      required:
+        - short_title
+        - description_text
+      properties:
+        short_title:
+          type: string
+          minLength: 1
+        description_text:
+          type: string
+          minLength: 1
+        visible_wear_notes:
+          type: string
+          nullable: true
+        key_selling_points:
+          type: string
+          nullable: true
+        review_notes:
+          type: string
+          nullable: true
+
+    ReviewSpecificationsInput:
+      type: object
+      description: >
+        All fields are optional here; the approval gate enforces that at least
+        one meaningful spec field is populated at approval time.
+      properties:
+        sensor_format:
+          type: string
+          nullable: true
+        megapixels:
+          type: number
+          format: float
+          nullable: true
+        lens_mount:
+          type: string
+          nullable: true
+        focal_length:
+          type: string
+          nullable: true
+        aperture:
+          type: string
+          nullable: true
+        iso_range:
+          type: string
+          nullable: true
+        shutter_range:
+          type: string
+          nullable: true
+        video_capabilities:
+          type: string
+          nullable: true
+        storage_media:
+          type: string
+          nullable: true
+        connectivity:
+          type: string
+          nullable: true
+        weight_grams:
+          type: integer
+          nullable: true
+        other_specifications:
+          type: object
+          nullable: true
+        review_notes:
+          type: string
+          nullable: true
+
+    ReviewAccessoriesInput:
+      type: object
+      required:
+        - included_accessories_text
+      properties:
+        included_accessories_text:
+          type: string
+          minLength: 1
+        inferred_accessories_text:
+          type: string
+          nullable: true
+        missing_typical_accessories_text:
+          type: string
+          nullable: true
+        review_notes:
+          type: string
+          nullable: true
+
+    ApproveJobInput:
+      type: object
+      properties:
+        approved_by:
+          type: string
+          nullable: true
+
+    ExportJobInput:
+      type: object
+      properties:
+        export_type:
+          type: string
+          enum: [csv]
+          default: csv
+        exported_by:
+          type: string
+          nullable: true
+
+    # -------------------------------------------------------------------------
+    # Error schemas
+    # -------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: job_not_found
+        message:
+          type: string
+          description: Human-readable error description
+
+    ApprovalValidationError:
+      type: object
+      required:
+        - error
+        - message
+        - validation_failures
+      properties:
+        error:
+          type: string
+          example: approval_validation_failed
+        message:
+          type: string
+          example: Job cannot be approved; required content is missing or invalid
+        validation_failures:
+          type: array
+          description: List of specific rule failures
+          items:
+            type: object
+            required:
+              - rule
+              - detail
+            properties:
+              rule:
+                type: string
+                example: review_overview.product_name_required
+              detail:
+                type: string
+                example: "product_name is null or blank in listing_review_overview"

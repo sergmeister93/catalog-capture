@@ -1,0 +1,566 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700&display=swap");
+
+/*
+ * Catalog Capture — global styles and design tokens.
+ *
+ * Cosmetic polish pass (2026-04-19): tightened type scale, expanded spacing /
+ * radius / shadow tokens, softened neutrals, refined buttons, cards, inputs,
+ * and status pills. Class names and token names from the prior version are
+ * preserved so the existing screens keep working without markup changes.
+ *
+ * Note on radius: the original brand spec called for 2px (sharp) edges, but
+ * the UX polish brief explicitly asks for 10–14px card radii. The polish
+ * brief wins — radii are now on a proper scale (6 / 10 / 14).
+ */
+
+:root {
+  /* ---------- Brand ---------- */
+  --brand-primary: #d12027;        /* Service Red — primary actions */
+  --brand-primary-hover: #a81a1f;
+  --brand-primary-active: #8a1318;
+  --brand-primary-soft: #fdecec;   /* Tinted background for subtle accents */
+  --brand-dark: #1a1a1a;
+  --brand-light: #ffffff;
+
+  /* ---------- Neutrals ---------- */
+  --ui-background: #f6f7f9;        /* Page bg — cool very-light gray */
+  --ui-surface: #ffffff;           /* Cards / panels */
+  --ui-surface-muted: #f2f4f7;     /* Subtle fills (hover, inset panels) */
+  --ui-border: #e4e7eb;            /* Soft borders */
+  --ui-border-strong: #cdd2da;     /* Hover / focus borders */
+  --ui-divider: #eceef1;           /* Section dividers (lighter than border) */
+
+  --ui-text-primary: #111827;      /* Headings, primary copy */
+  --ui-text-secondary: #374151;    /* Body / labels */
+  --ui-text-muted: #6b7280;        /* Helper / metadata */
+  --ui-text-disabled: #9ca3af;
+
+  /* ---------- Semantic ---------- */
+  --status-error: #b42318;
+  --status-error-bg: #fef3f2;
+  --status-error-border: #fecdca;
+  --status-success: #027a48;
+  --status-success-bg: #ecfdf3;
+  --status-success-border: #a6f4c5;
+  --status-warning: #b54708;
+  --status-warning-bg: #fffaeb;
+  --status-warning-border: #fedf89;
+  --status-info: #175cd3;
+  --status-info-bg: #eff4ff;
+  --status-info-border: #b2ccff;
+
+  /* ---------- AI accent ---------- */
+  --ai-accent-gradient: linear-gradient(90deg, #d12027 0%, #7b1113 100%);
+
+  /* ---------- Typography ---------- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Manrope", "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Type scale */
+  --fs-xs: 12px;                   /* Metadata, badges */
+  --fs-sm: 13px;                   /* Labels, helper text */
+  --fs-base: 14px;                 /* Default body */
+  --fs-md: 15px;                   /* Comfortable reading */
+  --fs-lg: 16px;                   /* Section headings */
+  --fs-xl: 18px;                   /* Subsection titles */
+  --fs-2xl: 22px;                  /* Card/item titles */
+  --fs-3xl: 30px;                  /* Page titles */
+
+  /* Weights */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* Line heights */
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-normal: 1.55;
+  --lh-relaxed: 1.65;
+
+  /* ---------- Spacing (4px base) ---------- */
+  --spacing-unit: 8px;             /* kept for backwards-compat w/ inline styles */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ---------- Radius ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;                /* pills, small chips */
+  --radius-md: 10px;               /* buttons, inputs */
+  --radius-lg: 14px;                /* cards, panels */
+  --radius-pill: 999px;
+
+  /* ---------- Shadows ---------- */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06),
+               0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow-md: 0 2px 4px rgba(16, 24, 40, 0.06),
+               0 4px 12px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 4px 8px rgba(16, 24, 40, 0.06),
+               0 12px 24px rgba(16, 24, 40, 0.08);
+  --shadow-focus: 0 0 0 3px rgba(209, 32, 39, 0.18);
+  --shadow-focus-neutral: 0 0 0 3px rgba(17, 24, 39, 0.10);
+}
+
+/* ---------- Reset + base ---------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--ui-text-secondary);
+  background-color: var(--ui-background);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* ---------- Headings ---------- */
+h1, h2, h3, h4, h5, h6 {
+  margin: 0 0 var(--space-3) 0;
+  color: var(--ui-text-primary);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: var(--fs-3xl); font-weight: var(--fw-semibold); letter-spacing: -0.02em; }
+h2 { font-size: var(--fs-2xl); }
+h3 { font-size: var(--fs-xl); }
+h4 { font-size: var(--fs-lg); }
+h5 { font-size: var(--fs-base); }
+
+p {
+  margin: 0 0 var(--space-3) 0;
+  line-height: var(--lh-relaxed);
+}
+
+small { font-size: var(--fs-sm); }
+
+a {
+  color: var(--brand-primary);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+a:hover { color: var(--brand-primary-hover); text-decoration: underline; }
+a:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-xs);
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--ui-divider);
+  margin: var(--space-5) 0;
+}
+
+code, kbd, pre, samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 120ms ease,
+              border-color 120ms ease,
+              color 120ms ease,
+              box-shadow 120ms ease,
+              transform 80ms ease;
+}
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* Primary — confident, unmistakable CTA */
+.btn-primary {
+  background-color: var(--brand-primary);
+  color: var(--brand-light);
+  border-color: var(--brand-primary);
+  box-shadow: var(--shadow-xs);
+}
+.btn-primary:hover {
+  background-color: var(--brand-primary-hover);
+  border-color: var(--brand-primary-hover);
+  box-shadow: var(--shadow-sm);
+}
+.btn-primary:active {
+  background-color: var(--brand-primary-active);
+  border-color: var(--brand-primary-active);
+  box-shadow: var(--shadow-xs);
+  transform: translateY(0.5px);
+}
+.btn-primary:focus-visible {
+  box-shadow: var(--shadow-focus), var(--shadow-sm);
+}
+
+/* Secondary — quiet but fully legible */
+.btn-secondary {
+  background-color: var(--ui-surface);
+  color: var(--ui-text-primary);
+  border-color: var(--ui-border-strong);
+  box-shadow: var(--shadow-xs);
+}
+.btn-secondary:hover {
+  background-color: var(--ui-surface-muted);
+  border-color: var(--ui-text-muted);
+  color: var(--ui-text-primary);
+}
+.btn-secondary:active {
+  background-color: var(--ui-border);
+}
+.btn-secondary:focus-visible {
+  box-shadow: var(--shadow-focus-neutral);
+}
+
+/* Danger / destructive — used by callers who opt-in */
+.btn-danger {
+  background-color: var(--status-error);
+  color: var(--brand-light);
+  border-color: var(--status-error);
+  box-shadow: var(--shadow-xs);
+}
+.btn-danger:hover {
+  background-color: #9a1d13;
+  border-color: #9a1d13;
+}
+
+/* Ghost / tertiary — text-only actions in dense UIs */
+.btn-ghost {
+  background-color: transparent;
+  color: var(--ui-text-secondary);
+  border-color: transparent;
+}
+.btn-ghost:hover {
+  background-color: var(--ui-surface-muted);
+  color: var(--ui-text-primary);
+}
+
+/* Size variants */
+.btn-sm { min-height: 32px; padding: 0 var(--space-3); font-size: var(--fs-sm); }
+.btn-lg { min-height: 48px; padding: 0 var(--space-5); font-size: var(--fs-md); }
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+/* ---------- Cards ---------- */
+.card {
+  background-color: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-bottom: var(--space-5);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Inner section dividers (if callers add <hr/> inside cards, this softens them).
+   Use .card__section + .card__section to separate blocks without harsh rules. */
+.card__section + .card__section {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--ui-divider);
+}
+
+/* ---------- Navbar ---------- */
+.navbar {
+  background-color: var(--ui-surface);
+  color: var(--ui-text-primary);
+  height: 64px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-8);
+  border-bottom: 1px solid var(--ui-border);
+  box-shadow: var(--shadow-xs);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.navbar__brand {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: #0f172a;                  /* Dark navy for premium wordmark feel */
+  font-size: 19px;
+  line-height: 1;
+}
+
+.navbar__brand-accent {
+  color: var(--brand-primary);
+  margin-left: 4px;
+}
+
+/* ---------- Page layout ---------- */
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6) var(--space-12);
+}
+
+/* ---------- Status pills ---------- */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: 1.5;
+  background-color: var(--ui-surface-muted);
+  color: var(--ui-text-secondary);
+  border: 1px solid var(--ui-border);
+  text-transform: none;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.status-pill--success {
+  background-color: var(--status-success-bg);
+  color: var(--status-success);
+  border-color: var(--status-success-border);
+}
+.status-pill--error {
+  background-color: var(--status-error-bg);
+  color: var(--status-error);
+  border-color: var(--status-error-border);
+}
+.status-pill--warning {
+  background-color: var(--status-warning-bg);
+  color: var(--status-warning);
+  border-color: var(--status-warning-border);
+}
+.status-pill--info {
+  background-color: var(--status-info-bg);
+  color: var(--status-info);
+  border-color: var(--status-info-border);
+}
+
+/* ---------- Utility text ---------- */
+.text-muted { color: var(--ui-text-muted); }
+.text-secondary { color: var(--ui-text-secondary); }
+.text-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--ui-text-secondary);
+  letter-spacing: 0.01em;
+  line-height: var(--lh-snug);
+}
+.text-meta {
+  font-size: var(--fs-xs);
+  color: var(--ui-text-muted);
+  line-height: var(--lh-snug);
+}
+
+/* ---------- Form controls (global baseline) ---------- */
+input[type="text"],
+input[type="search"],
+input[type="email"],
+input[type="number"],
+input[type="url"],
+input[type="tel"],
+input[type="password"],
+input:not([type]),
+textarea,
+select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  line-height: var(--lh-snug);
+  color: var(--ui-text-primary);
+  background-color: var(--ui-surface);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs) inset;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+  appearance: none;
+}
+textarea {
+  min-height: 88px;
+  padding: 10px 12px;
+  line-height: var(--lh-relaxed);
+  resize: vertical;
+}
+select {
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ui-text-muted) 50%),
+    linear-gradient(135deg, var(--ui-text-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 13px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 32px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ui-text-disabled);
+  opacity: 1;
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: var(--ui-text-muted);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--brand-primary);
+  box-shadow: var(--shadow-focus);
+  background-color: var(--ui-surface);
+}
+
+input:disabled,
+textarea:disabled,
+select:disabled {
+  background-color: var(--ui-surface-muted);
+  color: var(--ui-text-muted);
+  cursor: not-allowed;
+}
+
+/* Validation states — opt-in via aria-invalid */
+input[aria-invalid="true"],
+textarea[aria-invalid="true"],
+select[aria-invalid="true"] {
+  border-color: var(--status-error);
+}
+input[aria-invalid="true"]:focus,
+textarea[aria-invalid="true"]:focus,
+select[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.18);
+}
+
+label {
+  display: inline-block;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--ui-text-secondary);
+  margin-bottom: 6px;
+  line-height: var(--lh-snug);
+}
+
+/* Checkboxes / radios — keep native but give them breathing room */
+input[type="checkbox"],
+input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--brand-primary);
+  cursor: pointer;
+}
+
+/* ---------- Tables / lists ---------- */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-base);
+}
+th {
+  text-align: left;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ui-text-muted);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--ui-border);
+  background-color: var(--ui-surface-muted);
+}
+td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--ui-divider);
+  color: var(--ui-text-secondary);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: none; }
+
+/* ---------- Sticky action bar ---------- */
+.action-bar {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+  background-color: rgba(255, 255, 255, 0.92);
+  backdrop-filter: saturate(140%) blur(8px);
+  -webkit-backdrop-filter: saturate(140%) blur(8px);
+  border-top: 1px solid var(--ui-border);
+  box-shadow: 0 -4px 16px rgba(16, 24, 40, 0.05);
+  z-index: 10;
+}
+
+/* ---------- Focus outline fallback ---------- */
+:focus-visible {
+  outline: none;
+}
+
+/* ---------- Selection ---------- */
+::selection {
+  background-color: var(--brand-primary-soft);
+  color: var(--brand-primary-active);
+}
+
+/* ---------- Scrollbars (subtle, WebKit) ---------- */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--ui-border-strong);
+  border: 2px solid var(--ui-background);
+  border-radius: var(--radius-pill);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ui-text-muted); }

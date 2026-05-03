@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+  <!-- Catalog Capture — Executive System Architecture -->
+  <defs>
+    <style>
+      .title   { font-size: 30px; font-weight: 700; fill: #0F172A; }
+      .subtitle{ font-size: 15px; font-weight: 400; fill: #64748B; }
+      .layer   { font-size: 13px; font-weight: 700; letter-spacing: 1.2px; fill: #475569; }
+      .box-t   { font-size: 16px; font-weight: 600; fill: #0F172A; }
+      .box-s   { font-size: 12px; font-weight: 400; fill: #475569; }
+      .edge    { font-size: 11px; font-weight: 500; fill: #334155; }
+      .foot    { font-size: 11px; fill: #94A3B8; }
+      .dormant-t { font-size: 14px; font-weight: 600; fill: #64748B; }
+      .dormant-s { font-size: 11px; fill: #94A3B8; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="900" fill="#FFFFFF"/>
+
+  <!-- Header -->
+  <text x="60" y="62" class="title">Catalog Capture — System Architecture</text>
+  <text x="60" y="88" class="subtitle">AI-assisted used-item listing workflow · photos → grounded Gemini draft → human review → CSV export</text>
+  <line x1="60" y1="104" x2="1540" y2="104" stroke="#E2E8F0" stroke-width="1"/>
+
+  <!-- ====== LAYER CONTAINERS ====== -->
+  <!-- User -->
+  <g>
+    <text x="95" y="150" class="layer">USER</text>
+    <rect x="60" y="165" width="170" height="110" rx="10" fill="#EEF2F7" stroke="#64748B" stroke-width="1"/>
+    <circle cx="145" cy="205" r="14" fill="#FFFFFF" stroke="#64748B" stroke-width="1.2"/>
+    <path d="M131 235 Q145 220 159 235 L159 245 L131 245 Z" fill="#FFFFFF" stroke="#64748B" stroke-width="1.2"/>
+    <text x="145" y="268" class="box-t" text-anchor="middle">Reviewer</text>
+  </g>
+
+  <!-- UI Layer -->
+  <g>
+    <text x="295" y="150" class="layer">USER INTERFACE</text>
+    <rect x="260" y="165" width="260" height="460" rx="12" fill="#FFFFFF" stroke="#334155" stroke-width="1.3"/>
+    <text x="390" y="195" class="box-s" text-anchor="middle">React · Vite · TypeScript SPA</text>
+
+    <rect x="282" y="215" width="216" height="120" rx="8" fill="#F8FAFC" stroke="#CBD5E1"/>
+    <text x="390" y="245" class="box-t" text-anchor="middle">Upload</text>
+    <text x="390" y="268" class="box-s" text-anchor="middle">Drag-and-drop photos</text>
+    <text x="390" y="286" class="box-s" text-anchor="middle">Trigger extraction</text>
+    <text x="390" y="310" class="box-s" text-anchor="middle" font-style="italic">live progress banner</text>
+
+    <rect x="282" y="350" width="216" height="120" rx="8" fill="#F8FAFC" stroke="#CBD5E1"/>
+    <text x="390" y="380" class="box-t" text-anchor="middle">Review</text>
+    <text x="390" y="403" class="box-s" text-anchor="middle">Edit content &amp; pricing</text>
+    <text x="390" y="421" class="box-s" text-anchor="middle">Per-card approval</text>
+    <text x="390" y="445" class="box-s" text-anchor="middle" font-style="italic">local edits cached</text>
+
+    <rect x="282" y="485" width="216" height="120" rx="8" fill="#F8FAFC" stroke="#CBD5E1"/>
+    <text x="390" y="515" class="box-t" text-anchor="middle">Batch History</text>
+    <text x="390" y="538" class="box-s" text-anchor="middle">Prior extraction runs</text>
+    <text x="390" y="556" class="box-s" text-anchor="middle">Grouped by batch</text>
+    <text x="390" y="580" class="box-s" text-anchor="middle" font-style="italic">audit &amp; re-export</text>
+  </g>
+
+  <!-- Application Layer -->
+  <g>
+    <text x="595" y="150" class="layer">APPLICATION / ORCHESTRATION</text>
+    <rect x="560" y="165" width="300" height="460" rx="12" fill="#F8FAFC" stroke="#1E3A8A" stroke-width="1.3"/>
+    <text x="710" y="195" class="box-s" text-anchor="middle">FastAPI · Python 3.12 · Uvicorn</text>
+
+    <rect x="582" y="215" width="256" height="100" rx="8" fill="#FFFFFF" stroke="#1E3A8A"/>
+    <text x="710" y="245" class="box-t" text-anchor="middle">REST API</text>
+    <text x="710" y="268" class="box-s" text-anchor="middle">/api/v1/inbound/*</text>
+    <text x="710" y="286" class="box-s" text-anchor="middle">upload · extract · poll · export</text>
+
+    <rect x="582" y="330" width="256" height="100" rx="8" fill="#FFFFFF" stroke="#1E3A8A"/>
+    <text x="710" y="360" class="box-t" text-anchor="middle">Extraction Orchestrator</text>
+    <text x="710" y="383" class="box-s" text-anchor="middle">Per-image Gemini dispatch</text>
+    <text x="710" y="401" class="box-s" text-anchor="middle">Progress callbacks · validation</text>
+
+    <rect x="582" y="445" width="120" height="80" rx="8" fill="#FFFFFF" stroke="#1E3A8A"/>
+    <text x="642" y="475" class="box-t" text-anchor="middle">Job Tracker</text>
+    <text x="642" y="495" class="box-s" text-anchor="middle">in-memory</text>
+    <text x="642" y="511" class="box-s" text-anchor="middle">daemon thread</text>
+
+    <rect x="718" y="445" width="120" height="80" rx="8" fill="#FFFFFF" stroke="#1E3A8A"/>
+    <text x="778" y="475" class="box-t" text-anchor="middle">CSV Exporter</text>
+    <text x="778" y="495" class="box-s" text-anchor="middle">schema-driven</text>
+    <text x="778" y="511" class="box-s" text-anchor="middle">approved items</text>
+
+    <rect x="582" y="540" width="256" height="70" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-dasharray="4 3"/>
+    <text x="710" y="565" class="dormant-t" text-anchor="middle">Contracts (OpenAPI · JSON Schemas)</text>
+    <text x="710" y="583" class="dormant-s" text-anchor="middle">validates Gemini response &amp; CSV columns</text>
+  </g>
+
+  <!-- AI Layer -->
+  <g>
+    <text x="935" y="150" class="layer">AI PROCESSING</text>
+    <rect x="900" y="165" width="280" height="460" rx="12" fill="#FAF5FF" stroke="#6D28D9" stroke-width="1.3"/>
+    <text x="1040" y="195" class="box-s" text-anchor="middle">google-genai SDK</text>
+
+    <rect x="922" y="225" width="236" height="170" rx="8" fill="#FFFFFF" stroke="#6D28D9"/>
+    <text x="1040" y="258" class="box-t" text-anchor="middle">Google Gemini 2.x</text>
+    <text x="1040" y="280" class="box-s" text-anchor="middle">Multimodal vision</text>
+    <text x="1040" y="298" class="box-s" text-anchor="middle">Single-pass extraction</text>
+    <text x="1040" y="316" class="box-s" text-anchor="middle">+ pricing inference</text>
+    <text x="1040" y="340" class="box-s" text-anchor="middle" font-style="italic">structured JSON output</text>
+    <text x="1040" y="370" class="box-s" text-anchor="middle">product · specs · accessories</text>
+
+    <rect x="922" y="415" width="236" height="150" rx="8" fill="#FFF7ED" stroke="#B45309"/>
+    <text x="1040" y="448" class="box-t" text-anchor="middle">Google Search</text>
+    <text x="1040" y="468" class="box-t" text-anchor="middle">Grounding Tool</text>
+    <text x="1040" y="492" class="box-s" text-anchor="middle">Live market lookups</text>
+    <text x="1040" y="510" class="box-s" text-anchor="middle">eBay · MPB · KEH · B&amp;H</text>
+    <text x="1040" y="534" class="box-s" text-anchor="middle" font-style="italic">fair price · sources</text>
+  </g>
+
+  <!-- Data Layer -->
+  <g>
+    <text x="1255" y="150" class="layer">DATA &amp; OUTPUTS</text>
+    <rect x="1220" y="165" width="320" height="460" rx="12" fill="#F0FDF4" stroke="#047857" stroke-width="1.3"/>
+    <text x="1380" y="195" class="box-s" text-anchor="middle">Local filesystem (POC)</text>
+
+    <g>
+      <path d="M1250 225 h196 a8 8 0 0 1 8 8 v84 a8 8 0 0 1 -8 8 h-196 a8 8 0 0 1 -8 -8 v-84 a8 8 0 0 1 8 -8 z" fill="#FFFFFF" stroke="#047857"/>
+      <text x="1348" y="255" class="box-t" text-anchor="middle">input_images/</text>
+      <text x="1348" y="278" class="box-s" text-anchor="middle">Raw photos (one per item)</text>
+      <text x="1348" y="296" class="box-s" text-anchor="middle">Uploaded or dropped in</text>
+    </g>
+
+    <g>
+      <path d="M1250 340 h196 a8 8 0 0 1 8 8 v84 a8 8 0 0 1 -8 8 h-196 a8 8 0 0 1 -8 -8 v-84 a8 8 0 0 1 8 -8 z" fill="#FFFFFF" stroke="#047857"/>
+      <text x="1348" y="370" class="box-t" text-anchor="middle">inbound/</text>
+      <text x="1348" y="393" class="box-s" text-anchor="middle">Per-image extraction JSON</text>
+      <text x="1348" y="411" class="box-s" text-anchor="middle">extraction + pricing artifacts</text>
+    </g>
+
+    <g>
+      <path d="M1250 455 h196 a8 8 0 0 1 8 8 v84 a8 8 0 0 1 -8 8 h-196 a8 8 0 0 1 -8 -8 v-84 a8 8 0 0 1 8 -8 z" fill="#FFFFFF" stroke="#047857"/>
+      <text x="1348" y="485" class="box-t" text-anchor="middle">exports/</text>
+      <text x="1348" y="508" class="box-s" text-anchor="middle">listings_&lt;UTC&gt;.csv</text>
+      <text x="1348" y="526" class="box-s" text-anchor="middle">downstream marketplace feed</text>
+    </g>
+  </g>
+
+  <!-- Dormant pipeline strip -->
+  <g>
+    <rect x="60" y="660" width="1480" height="110" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="5 3"/>
+    <text x="80" y="688" class="layer" fill="#94A3B8">DORMANT — RETAINED FOR FUTURE PROMOTION</text>
+    <text x="80" y="715" class="dormant-t">DB-backed pipeline · /jobs/* (8 endpoints) · 12-table PostgreSQL schema · Alembic migrations · 47/47 tests passing</text>
+    <text x="80" y="738" class="dormant-s">Verified in Phase 2 and preserved intact. UI currently routes through the filesystem inbound flow; the DB pipeline is wired up but unused by the active reviewer workflow.</text>
+    <text x="80" y="758" class="dormant-s">Promotion path: migrate in-memory job tracker &amp; artifacts into PostgreSQL for multi-reviewer queues, durability, and audit.</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="60" y="860" class="foot">Data flow: Reviewer uploads photos → FastAPI orchestrates per-image Gemini call (grounded with Google Search) → artifacts land in inbound/ → Reviewer edits &amp; approves → CSV export to exports/.</text>
+  <text x="60" y="878" class="foot">Version: Phase 6 complete (2026-04-19). Source: CLAUDE.md · contracts/openapi_service_photo_poc.yaml</text>
+
+  <!-- ====== EDGES ====== -->
+  <!-- User → UI -->
+  <line x1="230" y1="275" x2="282" y2="275" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="230" y1="410" x2="282" y2="410" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="230" y1="545" x2="282" y2="545" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- UI → API (bundle to single REST box) -->
+  <path d="M520 275 C 545 275 555 265 582 265" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520 410 C 545 410 555 275 582 275" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520 545 C 545 545 555 285 582 285" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="534" y="255" class="edge">HTTP / JSON</text>
+
+  <!-- API ↔ Orchestrator -->
+  <line x1="710" y1="315" x2="710" y2="330" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Orchestrator → Gemini -->
+  <path d="M838 380 C 870 380 890 310 922 310" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="852" y="340" class="edge">image + prompt</text>
+
+  <!-- Gemini → Orchestrator (response) -->
+  <path d="M922 340 C 890 340 870 400 838 400" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="852" y="425" class="edge">structured JSON</text>
+
+  <!-- Gemini ↔ Grounding -->
+  <line x1="1040" y1="395" x2="1040" y2="415" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+
+  <!-- Orchestrator → inbound/ -->
+  <path d="M838 380 C 1050 380 1080 280 1242 280" stroke="#334155" stroke-width="1.5" fill="none" opacity="0"/>
+  <path d="M838 385 C 1020 385 1080 385 1242 385" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="1050" y="378" class="edge">write artifact</text>
+
+  <!-- API → input_images (upload + serve) -->
+  <path d="M838 260 C 1020 260 1080 280 1242 280" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="1040" y="252" class="edge">store / serve image</text>
+
+  <!-- Exporter → exports -->
+  <path d="M838 485 C 1020 485 1080 500 1242 500" stroke="#334155" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="1050" y="478" class="edge">write CSV</text>
+
+  <!-- Exporter → inbound (read) -->
+  <path d="M778 445 C 778 420 900 400 922 395" stroke="#334155" stroke-width="1" fill="none" opacity="0"/>
+  <path d="M838 470 C 1000 470 1120 400 1242 395" stroke="#334155" stroke-width="1.2" fill="none" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text x="1050" y="432" class="edge">read approved</text>
+
+  <!-- Review screen reads inbound artifacts -->
+  <path d="M498 410 C 520 410 520 160 1348 160 L 1348 225" stroke="#334155" stroke-width="1" fill="none" stroke-dasharray="3 3" opacity="0"/>
+
+  <!-- User downloads CSV -->
+  <path d="M1242 500 C 200 500 160 300 160 290 L 160 275" stroke="#94A3B8" stroke-width="1" fill="none" stroke-dasharray="4 3" opacity="0"/>
+</svg>

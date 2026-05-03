@@ -1,0 +1,307 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "gemini_draft_response_schema.json",
+  "title": "GeminiDraftResponse",
+  "description": "Structured draft response returned by Gemini for one Service Photo POC listing job. This payload is draft-only and is used to populate the listing_draft_* tables.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "overview",
+    "description",
+    "specifications",
+    "accessories"
+  ],
+  "additionalProperties": false,
+  "definitions": {
+    "nullable_string": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nullable_number": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "nullable_integer": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "nullable_object": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of the Gemini draft response schema.",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "extraction_warnings": {
+      "description": "Optional high-level warnings about uncertainty, unreadable labels, hidden accessories, or visual ambiguity.",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/string_array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "overview": {
+      "type": "object",
+      "description": "High-level product identification and condition summary.",
+      "required": [
+        "product_name",
+        "brand",
+        "model",
+        "product_family",
+        "variant",
+        "mount_type",
+        "serial_number_visible",
+        "condition_summary",
+        "confidence_notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "product_name": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Best-effort full product name based on visible evidence only."
+        },
+        "brand": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Visible or strongly supported brand name."
+        },
+        "model": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Visible or strongly supported model identifier."
+        },
+        "product_family": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Product family line, if identifiable, such as EOS, Alpha, Lumix, etc."
+        },
+        "variant": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Variant or submodel text if visible."
+        },
+        "mount_type": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Mount type where applicable, based on visible evidence only."
+        },
+        "serial_number_visible": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Only include if clearly visible in the images. Do not infer."
+        },
+        "condition_summary": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Short draft condition summary based on visible wear and presentation."
+        },
+        "confidence_notes": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Human-readable notes about uncertainty in identification."
+        }
+      }
+    },
+    "description": {
+      "type": "object",
+      "description": "Draft listing copy for review.",
+      "required": [
+        "short_title",
+        "description_text",
+        "visible_wear_notes",
+        "key_selling_points",
+        "confidence_notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "short_title": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Draft listing title."
+        },
+        "description_text": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Draft English-language description."
+        },
+        "visible_wear_notes": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Visible wear, scuffs, damage, or cosmetic observations."
+        },
+        "key_selling_points": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Short draft text capturing notable strengths or included value."
+        },
+        "confidence_notes": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Human-readable notes about uncertainty in descriptive content."
+        }
+      }
+    },
+    "specifications": {
+      "type": "object",
+      "description": "Structured specifications extracted or inferred conservatively from the images.",
+      "required": [
+        "sensor_format",
+        "megapixels",
+        "lens_mount",
+        "focal_length",
+        "aperture",
+        "iso_range",
+        "shutter_range",
+        "video_capabilities",
+        "storage_media",
+        "connectivity",
+        "weight_grams",
+        "other_specifications",
+        "confidence_notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sensor_format": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "megapixels": {
+          "$ref": "#/definitions/nullable_number"
+        },
+        "lens_mount": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "focal_length": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "aperture": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "iso_range": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "shutter_range": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "video_capabilities": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "storage_media": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "connectivity": {
+          "$ref": "#/definitions/nullable_string"
+        },
+        "weight_grams": {
+          "$ref": "#/definitions/nullable_integer"
+        },
+        "other_specifications": {
+          "$ref": "#/definitions/nullable_object",
+          "description": "Flexible JSON object for additional structured specs not modeled explicitly."
+        },
+        "confidence_notes": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Human-readable notes about uncertainty in specs."
+        }
+      }
+    },
+    "accessories": {
+      "type": "object",
+      "description": "Draft accessory and packaging observations.",
+      "required": [
+        "included_accessories_text",
+        "inferred_accessories_text",
+        "missing_typical_accessories_text",
+        "confidence_notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "included_accessories_text": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Accessories clearly visible and likely included."
+        },
+        "inferred_accessories_text": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Accessories likely included but not fully certain."
+        },
+        "missing_typical_accessories_text": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Typical accessories that do not appear visible in the provided images."
+        },
+        "confidence_notes": {
+          "$ref": "#/definitions/nullable_string",
+          "description": "Human-readable notes about uncertainty in accessory detection."
+        }
+      }
+    },
+    "pricing": {
+      "description": "Phase 5: combined pricing block returned in the same Gemini call as extraction. Gemini uses web search on eBay, MPB, KEH, and B&H to populate this. Optional because a grounded call may legitimately return no pricing when the product identity is too uncertain; the UI tolerates absence.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "product": {
+              "$ref": "#/definitions/nullable_string",
+              "description": "Human-readable product label Gemini used for the search (e.g. 'Canon EOS R6 Body')."
+            },
+            "pricing": {
+              "type": "object",
+              "description": "Per-platform observed prices. Numeric USD or null when the platform had no match.",
+              "additionalProperties": false,
+              "properties": {
+                "ebay_sold_avg":  { "$ref": "#/definitions/nullable_number", "description": "Average of recent Sold/Completed listings on eBay, USD." },
+                "mpb_retail":     { "$ref": "#/definitions/nullable_number", "description": "Current MPB retail for a comparable condition, USD." },
+                "keh_retail":     { "$ref": "#/definitions/nullable_number", "description": "Current KEH retail for a comparable condition, USD." },
+                "bh_used":        { "$ref": "#/definitions/nullable_number", "description": "B&H used inventory price if in stock, USD." }
+              }
+            },
+            "market_valuation": {
+              "type": "object",
+              "description": "Synthesized valuation Gemini produced from the platform data.",
+              "additionalProperties": false,
+              "properties": {
+                "fair_price":     { "$ref": "#/definitions/nullable_number", "description": "Recommended fair price for this item, USD. Flows into the CSV fair_price column." },
+                "deal_threshold": { "$ref": "#/definitions/nullable_number", "description": "Price at or below which this would be a standout deal, USD." }
+              }
+            },
+            "market_summary": {
+              "$ref": "#/definitions/nullable_string",
+              "description": "2-sentence plain-English summary of the market position."
+            },
+            "sources": {
+              "type": "array",
+              "description": "Concrete listings Gemini used as evidence. Reviewer can click through to verify before approving the numbers.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "platform":   { "$ref": "#/definitions/nullable_string" },
+                  "url":        { "$ref": "#/definitions/nullable_string" },
+                  "price":      { "$ref": "#/definitions/nullable_number" },
+                  "title":      { "$ref": "#/definitions/nullable_string" },
+                  "condition":  { "$ref": "#/definitions/nullable_string" },
+                  "observed_at":{ "$ref": "#/definitions/nullable_string" }
+                }
+              }
+            },
+            "uncertainty_tags": {
+              "$ref": "#/definitions/string_array",
+              "description": "Markers for fields Gemini estimated rather than observed (e.g. 'mpb_retail [UNCERTAIN]')."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

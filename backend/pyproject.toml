@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "service-photo"
+version = "0.1.0"
+description = "Service Photo POC — AI-assisted used-camera listing workflow"
+requires-python = ">=3.11"
+dependencies = [
+    # Web framework
+    "fastapi==0.111.0",
+    "uvicorn[standard]==0.29.0",
+    # Data validation
+    # pydantic pinned to >=2.11 because google-genai requires it; the old
+    # 2.7.1 pin was held over from the google-generativeai 0.5.x era.
+    "pydantic>=2.11",
+    "pydantic-settings>=2.2.1",
+    # Database
+    "sqlalchemy==2.0.30",
+    "alembic==1.13.1",
+    "psycopg2-binary==2.9.9",
+    # Gemini SDK — the new `google-genai` client, required for native
+    # google_search grounding on Gemini 2.x models (Phase 5 single-pass pricing).
+    "google-genai>=1.0",
+    # JSON Schema validation (for Gemini response)
+    "jsonschema==4.22.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.2.0",
+    "pytest-asyncio==0.23.7",
+    "httpx==0.27.0",         # TestClient transport
+    "pytest-cov==5.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Ship non-Python files (prompt templates, etc.) inside the installed package
+# so they survive a `pip install` into a container.
+[tool.setuptools.package-data]
+service_photo = ["prompts/*.md", "prompts/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,101 @@
+"""
+Application settings loaded from environment variables.
+
+Inputs:  environment variables (and optionally an .env file)
+Outputs: a singleton Settings instance at module level
+
+Required env vars:
+  GEMINI_API_KEY    — Google Gemini API key (unused in mock mode)
+
+Optional env vars:
+  DATABASE_URL      — PostgreSQL connection string (only the dormant /jobs
+                      pipeline uses it; the active /inbound pipeline does not)
+  APP_DATA_DIR      — base directory for input_images/, inbound/, exports/.
+                      Defaults to the repo root for local dev. On hosted
+                      deployments (e.g. Railway) point at a persistent
+                      volume like /data.
+  STORAGE_BASE_PATH — legacy alias used by the dormant /jobs pipeline.
+  ENV_FILE          — absolute path to a dotenv file. Overrides the default
+                      lookup. Use this on hosted deployments where there is
+                      no repo root layout.
+  LOG_LEVEL         — Python log level string (default: INFO)
+  USE_MOCK_GEMINI   — set "true" to force mock Gemini client (default: true)
+
+Env-file resolution order:
+  1. ENV_FILE env var, if set and the file exists.
+  2. Repo-root .env (parents[4] of this file), if it exists. Preserves the
+     dev.bat / local-dev workflow on Windows.
+  3. None — rely entirely on real environment variables (this is the normal
+     case on Railway / any container host that injects vars directly).
+"""
+
+import os
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# parents: [0]=core, [1]=service_photo, [2]=src, [3]=backend, [4]=repo root.
+# This still works for the local Windows dev flow. In a container the layout
+# is different and this path simply won't exist — the resolver below falls
+# through to None, and the container relies on real env vars (Railway-style)
+# or an explicit ENV_FILE override.
+_REPO_ROOT_GUESS = Path(__file__).resolve().parents[4]
+_REPO_ROOT_ENV = _REPO_ROOT_GUESS / ".env"
+
+
+def _resolve_env_file() -> str | None:
+    """Pick the dotenv file to load, or return None if we should rely on
+    process environment variables only."""
+    explicit = os.environ.get("ENV_FILE")
+    if explicit:
+        explicit_path = Path(explicit)
+        if explicit_path.is_file():
+            return str(explicit_path)
+        # Explicit override that doesn't exist is almost certainly a config
+        # mistake worth surfacing — but pydantic-settings will silently no-op
+        # on a missing file, so just return the path and let it ignore.
+        return str(explicit_path)
+    if _REPO_ROOT_ENV.is_file():
+        return str(_REPO_ROOT_ENV)
+    return None
+
+
+class Settings(BaseSettings):
+    # --- Database (only used by dormant /jobs pipeline) ---
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/service_photo_dev"
+
+    # --- Gemini ---
+    GEMINI_API_KEY: str = "placeholder-not-needed-for-mock"
+
+    # --- Storage ---
+    # Base directory for the active inbound pipeline's filesystem state.
+    # Local default: the repo root (so input_images/, inbound/, exports/
+    # land in the repo as they always have).
+    # Hosted default (set in the Dockerfile / Railway env): /data.
+    APP_DATA_DIR: str = str(_REPO_ROOT_GUESS)
+
+    # Legacy — only the dormant /jobs pipeline reads this.
+    STORAGE_BASE_PATH: str = "./storage"
+
+    # --- Logging ---
+    LOG_LEVEL: str = "INFO"
+
+    # --- Gemini mode ---
+    # Set USE_MOCK_GEMINI=false in the environment to use the real client.
+    USE_MOCK_GEMINI: bool = True
+
+    model_config = SettingsConfigDict(
+        env_file=_resolve_env_file(),
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+
+# Module-level singleton — import this everywhere instead of instantiating Settings directly.
+settings = Settings()
+
+
+# Convenience: resolved Path for the data directory. Created on demand by the
+# routes that write into it (so a fresh container or volume just works).
+APP_DATA_PATH = Path(settings.APP_DATA_DIR).resolve()

@@ -1,0 +1,64 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+build/
+.next/
+.nuxt/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# --- Environment & secrets ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+CLAUDE.local.md
+
+# --- Runtime storage (never commit) ---
+storage/
+inbound/
+exports/
+input_images/
+# Docker volume mount used for local hosted-mode testing
+_local_data/
+
+# --- Alembic local overrides ---
+alembic.ini.local
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs outside storage/ ---
+*.log
+
+# --- Large binaries / presentation assets (keep in OneDrive, not git) ---
+handover/video_demos/
+*.mp4
+*.mov
+*.wav
+*.mp3

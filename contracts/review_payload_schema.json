@@ -1,0 +1,298 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "review_payload_schema.json",
+  "title": "ReviewPayload",
+  "description": "Full review payload returned by GET /jobs/{job_id}/review-payload. Contains the job record, registered images, AI-generated draft content, and human-reviewed content for the listing job.",
+  "type": "object",
+  "required": ["job", "images", "draft", "review"],
+  "additionalProperties": false,
+
+  "definitions": {
+
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+
+    "datetime": {
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "nullable_string": {
+      "type": ["string", "null"]
+    },
+
+    "nullable_number": {
+      "type": ["number", "null"]
+    },
+
+    "nullable_integer": {
+      "type": ["integer", "null"]
+    },
+
+    "nullable_object": {
+      "type": ["object", "null"]
+    },
+
+    "job_status": {
+      "type": "string",
+      "enum": [
+        "uploaded",
+        "initialized",
+        "submitted_to_ai",
+        "ai_response_received",
+        "ready_for_review",
+        "under_review",
+        "approved",
+        "exported",
+        "validation_failed",
+        "ai_error",
+        "needs_rework",
+        "rejected"
+      ]
+    },
+
+    "ListingJob": {
+      "type": "object",
+      "required": ["job_id", "job_number", "created_at", "updated_at", "status", "is_reviews_enriched", "is_price_enriched"],
+      "additionalProperties": false,
+      "properties": {
+        "job_id":               { "$ref": "#/definitions/uuid" },
+        "job_number":           { "type": "string" },
+        "created_at":           { "$ref": "#/definitions/datetime" },
+        "updated_at":           { "$ref": "#/definitions/datetime" },
+        "created_by":           { "$ref": "#/definitions/nullable_string" },
+        "reviewed_by":          { "$ref": "#/definitions/nullable_string" },
+        "approved_by":          { "$ref": "#/definitions/nullable_string" },
+        "status":               { "$ref": "#/definitions/job_status" },
+        "item_category":        { "$ref": "#/definitions/nullable_string" },
+        "is_reviews_enriched":  { "type": "boolean" },
+        "is_price_enriched":    { "type": "boolean" },
+        "approved_at":          { "oneOf": [{ "$ref": "#/definitions/datetime" }, { "type": "null" }] },
+        "exported_at":          { "oneOf": [{ "$ref": "#/definitions/datetime" }, { "type": "null" }] },
+        "notes":                { "$ref": "#/definitions/nullable_string" }
+      }
+    },
+
+    "ListingJobImage": {
+      "type": "object",
+      "required": ["image_id", "job_id", "file_name", "file_path", "file_type", "image_order", "is_primary", "uploaded_at"],
+      "additionalProperties": false,
+      "properties": {
+        "image_id":         { "$ref": "#/definitions/uuid" },
+        "job_id":           { "$ref": "#/definitions/uuid" },
+        "file_name":        { "type": "string" },
+        "file_path":        { "type": "string" },
+        "file_type":        { "type": "string", "example": "image/jpeg" },
+        "file_size_bytes":  { "$ref": "#/definitions/nullable_integer" },
+        "image_order":      { "type": "integer", "minimum": 1 },
+        "is_primary":       { "type": "boolean" },
+        "uploaded_at":      { "$ref": "#/definitions/datetime" },
+        "uploaded_by":      { "$ref": "#/definitions/nullable_string" },
+        "checksum":         { "$ref": "#/definitions/nullable_string" }
+      }
+    },
+
+    "DraftOverview": {
+      "type": ["object", "null"],
+      "required": ["draft_overview_id", "job_id", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "draft_overview_id":        { "$ref": "#/definitions/uuid" },
+        "job_id":                   { "$ref": "#/definitions/uuid" },
+        "product_name":             { "$ref": "#/definitions/nullable_string" },
+        "brand":                    { "$ref": "#/definitions/nullable_string" },
+        "model":                    { "$ref": "#/definitions/nullable_string" },
+        "product_family":           { "$ref": "#/definitions/nullable_string" },
+        "variant":                  { "$ref": "#/definitions/nullable_string" },
+        "mount_type":               { "$ref": "#/definitions/nullable_string" },
+        "serial_number_visible":    { "$ref": "#/definitions/nullable_string" },
+        "condition_summary":        { "$ref": "#/definitions/nullable_string" },
+        "confidence_notes":         { "$ref": "#/definitions/nullable_string" },
+        "raw_source_payload":       { "$ref": "#/definitions/nullable_object" },
+        "created_at":               { "$ref": "#/definitions/datetime" }
+      }
+    },
+
+    "DraftDescription": {
+      "type": ["object", "null"],
+      "required": ["draft_description_id", "job_id", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "draft_description_id":   { "$ref": "#/definitions/uuid" },
+        "job_id":                 { "$ref": "#/definitions/uuid" },
+        "short_title":            { "$ref": "#/definitions/nullable_string" },
+        "description_text":       { "$ref": "#/definitions/nullable_string" },
+        "visible_wear_notes":     { "$ref": "#/definitions/nullable_string" },
+        "key_selling_points":     { "$ref": "#/definitions/nullable_string" },
+        "confidence_notes":       { "$ref": "#/definitions/nullable_string" },
+        "created_at":             { "$ref": "#/definitions/datetime" }
+      }
+    },
+
+    "DraftSpecifications": {
+      "type": ["object", "null"],
+      "required": ["draft_specifications_id", "job_id", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "draft_specifications_id":    { "$ref": "#/definitions/uuid" },
+        "job_id":                     { "$ref": "#/definitions/uuid" },
+        "sensor_format":              { "$ref": "#/definitions/nullable_string" },
+        "megapixels":                 { "$ref": "#/definitions/nullable_number" },
+        "lens_mount":                 { "$ref": "#/definitions/nullable_string" },
+        "focal_length":               { "$ref": "#/definitions/nullable_string" },
+        "aperture":                   { "$ref": "#/definitions/nullable_string" },
+        "iso_range":                  { "$ref": "#/definitions/nullable_string" },
+        "shutter_range":              { "$ref": "#/definitions/nullable_string" },
+        "video_capabilities":         { "$ref": "#/definitions/nullable_string" },
+        "storage_media":              { "$ref": "#/definitions/nullable_string" },
+        "connectivity":               { "$ref": "#/definitions/nullable_string" },
+        "weight_grams":               { "$ref": "#/definitions/nullable_integer" },
+        "other_specifications":       { "$ref": "#/definitions/nullable_object" },
+        "confidence_notes":           { "$ref": "#/definitions/nullable_string" },
+        "created_at":                 { "$ref": "#/definitions/datetime" }
+      }
+    },
+
+    "DraftAccessories": {
+      "type": ["object", "null"],
+      "required": ["draft_accessories_id", "job_id", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "draft_accessories_id":               { "$ref": "#/definitions/uuid" },
+        "job_id":                             { "$ref": "#/definitions/uuid" },
+        "included_accessories_text":          { "$ref": "#/definitions/nullable_string" },
+        "inferred_accessories_text":          { "$ref": "#/definitions/nullable_string" },
+        "missing_typical_accessories_text":   { "$ref": "#/definitions/nullable_string" },
+        "confidence_notes":                   { "$ref": "#/definitions/nullable_string" },
+        "created_at":                         { "$ref": "#/definitions/datetime" }
+      }
+    },
+
+    "ReviewOverview": {
+      "type": ["object", "null"],
+      "required": ["review_overview_id", "job_id", "product_name", "condition_summary", "last_edited_at"],
+      "additionalProperties": false,
+      "properties": {
+        "review_overview_id":       { "$ref": "#/definitions/uuid" },
+        "job_id":                   { "$ref": "#/definitions/uuid" },
+        "product_name":             { "type": "string", "minLength": 1 },
+        "brand":                    { "$ref": "#/definitions/nullable_string" },
+        "model":                    { "$ref": "#/definitions/nullable_string" },
+        "product_family":           { "$ref": "#/definitions/nullable_string" },
+        "variant":                  { "$ref": "#/definitions/nullable_string" },
+        "mount_type":               { "$ref": "#/definitions/nullable_string" },
+        "serial_number_visible":    { "$ref": "#/definitions/nullable_string" },
+        "condition_summary":        { "type": "string", "minLength": 1 },
+        "review_notes":             { "$ref": "#/definitions/nullable_string" },
+        "last_edited_at":           { "$ref": "#/definitions/datetime" },
+        "last_edited_by":           { "$ref": "#/definitions/nullable_string" }
+      }
+    },
+
+    "ReviewDescription": {
+      "type": ["object", "null"],
+      "required": ["review_description_id", "job_id", "short_title", "description_text", "last_edited_at"],
+      "additionalProperties": false,
+      "properties": {
+        "review_description_id":  { "$ref": "#/definitions/uuid" },
+        "job_id":                 { "$ref": "#/definitions/uuid" },
+        "short_title":            { "type": "string", "minLength": 1 },
+        "description_text":       { "type": "string", "minLength": 1 },
+        "visible_wear_notes":     { "$ref": "#/definitions/nullable_string" },
+        "key_selling_points":     { "$ref": "#/definitions/nullable_string" },
+        "review_notes":           { "$ref": "#/definitions/nullable_string" },
+        "last_edited_at":         { "$ref": "#/definitions/datetime" },
+        "last_edited_by":         { "$ref": "#/definitions/nullable_string" }
+      }
+    },
+
+    "ReviewSpecifications": {
+      "type": ["object", "null"],
+      "required": ["review_specifications_id", "job_id", "last_edited_at"],
+      "additionalProperties": false,
+      "properties": {
+        "review_specifications_id":   { "$ref": "#/definitions/uuid" },
+        "job_id":                     { "$ref": "#/definitions/uuid" },
+        "sensor_format":              { "$ref": "#/definitions/nullable_string" },
+        "megapixels":                 { "$ref": "#/definitions/nullable_number" },
+        "lens_mount":                 { "$ref": "#/definitions/nullable_string" },
+        "focal_length":               { "$ref": "#/definitions/nullable_string" },
+        "aperture":                   { "$ref": "#/definitions/nullable_string" },
+        "iso_range":                  { "$ref": "#/definitions/nullable_string" },
+        "shutter_range":              { "$ref": "#/definitions/nullable_string" },
+        "video_capabilities":         { "$ref": "#/definitions/nullable_string" },
+        "storage_media":              { "$ref": "#/definitions/nullable_string" },
+        "connectivity":               { "$ref": "#/definitions/nullable_string" },
+        "weight_grams":               { "$ref": "#/definitions/nullable_integer" },
+        "other_specifications":       { "$ref": "#/definitions/nullable_object" },
+        "review_notes":               { "$ref": "#/definitions/nullable_string" },
+        "last_edited_at":             { "$ref": "#/definitions/datetime" },
+        "last_edited_by":             { "$ref": "#/definitions/nullable_string" }
+      }
+    },
+
+    "ReviewAccessories": {
+      "type": ["object", "null"],
+      "required": ["review_accessories_id", "job_id", "included_accessories_text", "last_edited_at"],
+      "additionalProperties": false,
+      "properties": {
+        "review_accessories_id":              { "$ref": "#/definitions/uuid" },
+        "job_id":                             { "$ref": "#/definitions/uuid" },
+        "included_accessories_text":          { "type": "string", "minLength": 1 },
+        "inferred_accessories_text":          { "$ref": "#/definitions/nullable_string" },
+        "missing_typical_accessories_text":   { "$ref": "#/definitions/nullable_string" },
+        "review_notes":                       { "$ref": "#/definitions/nullable_string" },
+        "last_edited_at":                     { "$ref": "#/definitions/datetime" },
+        "last_edited_by":                     { "$ref": "#/definitions/nullable_string" }
+      }
+    },
+
+    "DraftContent": {
+      "type": "object",
+      "description": "All AI-generated draft sections. Any section may be null if not yet written.",
+      "additionalProperties": false,
+      "properties": {
+        "overview":       { "$ref": "#/definitions/DraftOverview" },
+        "description":    { "$ref": "#/definitions/DraftDescription" },
+        "specifications": { "$ref": "#/definitions/DraftSpecifications" },
+        "accessories":    { "$ref": "#/definitions/DraftAccessories" }
+      }
+    },
+
+    "ReviewContent": {
+      "type": "object",
+      "description": "All human-reviewed sections. Any section may be null before the reviewer has saved it.",
+      "additionalProperties": false,
+      "properties": {
+        "overview":       { "$ref": "#/definitions/ReviewOverview" },
+        "description":    { "$ref": "#/definitions/ReviewDescription" },
+        "specifications": { "$ref": "#/definitions/ReviewSpecifications" },
+        "accessories":    { "$ref": "#/definitions/ReviewAccessories" }
+      }
+    }
+
+  },
+
+  "properties": {
+    "job": {
+      "$ref": "#/definitions/ListingJob",
+      "description": "The parent listing job record."
+    },
+    "images": {
+      "type": "array",
+      "description": "All images registered for this job, ordered by image_order ascending.",
+      "items": { "$ref": "#/definitions/ListingJobImage" }
+    },
+    "draft": {
+      "$ref": "#/definitions/DraftContent",
+      "description": "AI-generated draft content. Read-only after creation. Source material for the review layer."
+    },
+    "review": {
+      "$ref": "#/definitions/ReviewContent",
+      "description": "Human-reviewed content. Authoritative source of truth for approval and export."
+    }
+  }
+}
