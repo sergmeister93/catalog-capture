@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  clearAllData,
   listInputImages,
   startExtraction,
   uploadInputImages,
@@ -25,6 +26,13 @@ import {
 } from "@/api/inbound";
 import { navigate } from "@/state/router";
 import { ACTIVE_EXTRACTION_KEY } from "@/state/extractionHandoff";
+
+// Browser-side caches the "Clear Data" button also wipes, so the UI doesn't
+// keep showing review state for items that no longer exist on the server.
+// Keep this in sync with the keys defined in InboundScreen.tsx and
+// extractionHandoff.ts — they're not exported because they're considered
+// internal to those modules.
+const REVIEW_STATE_KEY = "service-photo:inbound-review-state-v2";
 
 type LoadState =
   | { kind: "loading" }
@@ -106,6 +114,42 @@ export default function PrepScreen() {
     },
     [refresh],
   );
+
+  // Full reset: deletes every uploaded image, every extraction JSON, and
+  // every exported CSV from the persistent volume, plus the browser-side
+  // review/handoff state. Gated behind window.confirm so a stray click can't
+  // wipe a working batch. Pre-Cloudflare-Access this is the only "I'm done,
+  // start over" affordance — once Access is in place we may layer auth on
+  // top, but the destructive nature is the same either way.
+  const handleClearData = useCallback(async () => {
+    const ok = window.confirm(
+      "Clear ALL data?\n\n" +
+        "This permanently deletes every uploaded image, every extraction result, " +
+        "and every exported CSV on the server, plus your in-progress review " +
+        "state in this browser.\n\n" +
+        "This cannot be undone. Continue?",
+    );
+    if (!ok) return;
+
+    try {
+      const result = await clearAllData();
+      try {
+        localStorage.removeItem(ACTIVE_EXTRACTION_KEY);
+        localStorage.removeItem(REVIEW_STATE_KEY);
+      } catch {
+        // localStorage can throw in private mode — best-effort only.
+      }
+      void refresh();
+      window.alert(
+        `Cleared ${result.input_images_deleted} image(s), ` +
+          `${result.inbound_deleted} extraction(s), ` +
+          `${result.exports_deleted} export(s).`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      window.alert(`Clear failed: ${message}`);
+    }
+  }, [refresh]);
 
   // Window-level drag tracking. Attached once on mount. We preventDefault on
   // every dragover so the browser doesn't navigate to the file on drop.
@@ -201,15 +245,25 @@ export default function PrepScreen() {
                 : "\u00A0"}
             </div>
           </div>
-          <button
-            className="btn btn-secondary"
-            onClick={refresh}
-            disabled={loadState.kind === "loading"}
-            style={{ fontSize: "11px", padding: "4px 8px" }}
-            title="Check for newly added images"
-          >
-            {loadState.kind === "loading" ? "…" : "Check for Images"}
-          </button>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <button
+              className="btn btn-secondary"
+              onClick={refresh}
+              disabled={loadState.kind === "loading"}
+              style={{ fontSize: "11px", padding: "4px 8px" }}
+              title="Check for newly added images"
+            >
+              {loadState.kind === "loading" ? "…" : "Check for Images"}
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={handleClearData}
+              style={{ fontSize: "11px", padding: "4px 8px" }}
+              title="Delete all uploaded images, extractions, and exports"
+            >
+              Clear Data
+            </button>
+          </div>
         </header>
 
         {/* Hidden file input — the drop zone triggers a click on this for

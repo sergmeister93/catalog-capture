@@ -340,3 +340,24 @@ export function exportDownloadUrl(csvFilename: string): string {
   return `${API_BASE}/inbound/exports/${encodeURIComponent(csvFilename)}`;
 }
 
+/** Counts of files removed from each managed directory. */
+export interface ClearDataResponse {
+  input_images_deleted: number;
+  inbound_deleted: number;
+  exports_deleted: number;
+}
+
+/**
+ * Wipe every file the app has written to the persistent volume:
+ * input_images/, inbound/, exports/. Destructive and irreversible — the
+ * caller is responsible for confirming with the user first.
+ */
+export async function clearAllData(): Promise<ClearDataResponse> {
+  const r = await fetch(`${API_BASE}/inbound/data`, { method: "DELETE" });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`DELETE /inbound/data failed: ${r.status} ${text}`);
+  }
+  return (await r.json()) as ClearDataResponse;
+}
+
