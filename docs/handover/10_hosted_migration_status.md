@@ -1,8 +1,8 @@
-# Hosted Migration — Current Status & Next-Session Handoff
+# Hosted Migration — Final Status
 
-_Last updated: 2026-05-03 (evening). Author: Claude (Opus 4.7), pair-programming with Sergey._
+_Last updated: 2026-05-03 (late evening). Author: Claude (Opus 4.7), pair-programming with Sergey._
 
-This file is the **single source of truth** for where the hosted-deployment work stands. Read this first when picking the project back up — it supersedes the planning-phase content in `01_self_host_migration_spec.md` (which described a home Ubuntu mini-PC + Cloudflare Tunnel target; the actual deployment pivoted to **Railway + Cloudflare Access** for lower friction).
+**Phase M is COMPLETE.** This file is the historical record of how the hosted deployment came together. It supersedes the planning-phase content in `01_self_host_migration_spec.md` (which described a home Ubuntu mini-PC + Cloudflare Tunnel target; the actual deployment pivoted to **Railway + Cloudflare Access** for lower friction).
 
 ---
 
@@ -10,8 +10,8 @@ This file is the **single source of truth** for where the hosted-deployment work
 
 - ✅ **Railway deployment is LIVE.** The container is running on the `catalog-capture` service in Railway project `accurate-liberation`, region `us-west2`, mounted volume at `/data`, env vars set (`GEMINI_API_KEY`, `USE_MOCK_GEMINI=false`, `GEMINI_MODEL=gemini-2.5-flash`). End-to-end smoke test passed against real Gemini: upload → extract → review → export → CSV downloads to browser.
 - ✅ **CSV download works in the browser.** `GET /api/v1/inbound/exports/{filename}` (PR #1, merged) lets the user pull exported CSVs into Chrome's Downloads folder. The CSV also persists on the volume.
-- ✅ **"Clear Data" button shipped.** `DELETE /api/v1/inbound/data` + button on the Upload screen (PR #2, merged) gives the user a single-click full reset of `input_images/`, `inbound/`, `exports/`, plus the two browser-side localStorage keys. Endpoint has no server-side auth — relies on Cloudflare Access.
-- ❌ **Cloudflare Access is not wired up yet.** The Railway URL is currently public — anyone who finds it can use the app and burn Gemini credits. **This is the next concrete step.** Blocked on a domain decision (see "What's left" below).
+- ✅ **"Clear Data" button shipped.** `DELETE /api/v1/inbound/data` + button on the Upload screen (PR #2, merged) gives the user a single-click full reset of `input_images/`, `inbound/`, `exports/`, plus the two browser-side localStorage keys. Endpoint has no server-side auth — relies on Cloudflare Access (now in place).
+- ✅ **Cloudflare Access is LIVE.** Live URL is `https://app.catalog-capture.com`. Zero Trust team `sbf322`, One-time PIN identity provider, reusable email-allowlist policy with Sergey + wife. The destructive `DELETE /inbound/data` is now gated.
 
 ---
 
@@ -68,32 +68,32 @@ Three PRs (one direct push, two PRs):
 
 ## What's left
 
-### Step A: Smoke-test the Clear Data button on the live URL (~2 minutes)
+Phase M is closed. Optional polish items kicked to a future session (only if Sergey asks):
 
-PR #2 is merged; Railway will have redeployed by the start of the next session. Confirm it works end-to-end:
-1. Upload a test photo, run extraction, export.
-2. Click "Clear Data" → cancel → verify nothing changes.
-3. Click "Clear Data" → accept → verify alert shows accurate counts and the thumbnail list empties.
-4. Refresh the page → verify state stayed cleared (volume actually purged).
-5. Upload again → verify uploads still work after a clear (directories were preserved, only contents removed).
-
-### Step B: Cloudflare Access (the auth wall)
-
-**Blocked on a domain decision.** Cloudflare Access requires a hostname inside a Cloudflare-managed zone. Putting Access in front of `*.up.railway.app` directly is **not supported**.
-
-Options to unblock:
-- **(B1) Existing Cloudflare-managed domain.** Add a CNAME like `capture.<domain>` → Railway-provided target. Set up Access with a self-hosted application policy. Identity provider = One-time PIN (email magic link). Allow rule = email allowlist (Sergey + wife). ~10 minutes once the domain is in place.
-- **(B2) New domain at Cloudflare Registrar.** ~$10/yr. Add to Cloudflare, then proceed with B1.
-- **(B3) Defer entirely.** Rely on URL obscurity for the short term. Risky if the URL ever leaks.
-
-**Open question for next session:** does Sergey have an existing Cloudflare-managed domain? Confirm before writing the Access steps.
-
-### Step C: optional polish (only if Sergey asks)
-
-- Custom domain on Railway via CNAME (handled as part of B above).
 - Switch from `--workers 1` after promoting `_jobs` to SQLite (the original Phase 7A item).
 - Backups: cron + rclone the `/data` volume contents to OneDrive if Railway's volume durability isn't trusted.
 - Auto-purge `input_images/` on successful export (richer than the all-or-nothing Clear Data button).
+- Self-host Inter/Manrope fonts to drop the Google Fonts CDN dependency (cosmetic, only matters if Sergey ever wants an air-gapped build).
+- Consider replacing One-time PIN with Google OAuth as the IDP if the OTP delivery flakiness recurs (better UX, requires a Google Cloud OAuth client).
+
+### How Step B (Cloudflare Access) actually shipped
+
+For the historical record. Sergey resolved the domain blocker by registering `catalog-capture.com` at **Cloudflare Registrar** (~$10/yr, expires May 2027). The end-to-end click path was:
+
+1. **Railway custom domain.** Service → Settings → Networking → Custom Domain → enter `app.catalog-capture.com`, port 8080. Railway invoked the one-click Cloudflare DNS authorization, which auto-creates the CNAME (`app` → `<railway-target>.up.railway.app`, **proxied / orange cloud**) and the `_railway-verify` TXT record. SSL/TLS mode in Cloudflare set to **Full (strict)** — Railway issues a valid Let's Encrypt cert for the custom hostname, so strict works.
+2. **Zero Trust team.** First visit to `one.dash.cloudflare.com` prompted for a team name (chose `sbf322`) and plan (Free, covers up to 50 users).
+3. **Identity provider.** One-time PIN was already present as the default in **Integrations → Identity providers**. No external IDP added.
+4. **Reusable policy.** **Access controls → Policies → Create.** Named `Catalog Capture allowlist`, Action: Allow, Session: 1 month, Include rule: Selector = Emails, values = the owner + collaborator email addresses (two entries). The new Cloudflare One UI requires policies to be created as reusable objects *before* attaching them to apps; the inline-policy flow is gone.
+5. **Self-hosted application.** **Access controls → Applications → Add application → Self-hosted.** Name `catalog-capture.com`, public hostname destination = subdomain `app` + domain `catalog-capture.com`. In the application Configure page, attached the `Catalog Capture allowlist` policy via the Access Policies section.
+
+### OTP delivery quirk to remember
+
+During setup, the One-time PIN emails took unusually long to arrive — the login page showed "A code has been emailed to you" but Gmail received nothing for several minutes despite multiple Resend clicks. Cloudflare's status page only listed a "delayed audit logs" incident, not OTP delivery. It eventually started working on its own. If a future user (e.g., wife on a fresh device) hits the same issue:
+
+- Search Gmail for `from:noreply@notify.cloudflare.com` and just `cloudflare` (broader, no `from:` prefix).
+- Check Promotions and Updates tabs (separate from "All Mail").
+- Try Resend a couple times.
+- If still no email after 30 min, the pragmatic pivot is replacing the IDP with Google OAuth — UX is better anyway (one click, no codes). Requires a Google Cloud OAuth 2.0 client (~15 min of setup) but doesn't depend on Cloudflare's mail pipe.
 
 ---
 
@@ -148,13 +148,4 @@ Files `05_inbound_routes.py`, `06_config.py`, and `07_backend_pyproject.toml` in
 
 ## Kickoff prompt for the next session
 
-Paste this into a fresh Claude session when you're ready to wire up Cloudflare Access:
-
-> I'm continuing the hosted migration of Catalog Capture. The Railway deployment is live and end-to-end verified — upload, extract (real Gemini), review, export-with-browser-download all work. Read `docs/handover/10_hosted_migration_status.md` first; it's the source of truth.
->
-> Two things to do this session:
->
-> 1. Quick smoke-test of the merged "Clear Data" button on the live URL (upload → export → clear → verify counts + that uploads still work after).
-> 2. Then walk me through Cloudflare Access setup, treating me as a non-developer. Before you start, ask whether I have an existing Cloudflare-managed domain — that decision shapes the steps.
->
-> Don't write code unless deployment surfaces a real bug. The app is feature-complete for this phase.
+Phase M is closed; there's no specific next session queued. If Sergey decides to start any of the optional-polish items above, draft a fresh prompt that names the specific item and points the new session at this doc + the project's `CLAUDE.md`.
