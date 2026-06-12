@@ -11,10 +11,13 @@ they only connect to PostgreSQL when a test requests them — so this package
 runs green on a machine with no database at all.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from service_photo.api import inbound_routes
+from service_photo.services import inbound_store
 
 
 @pytest.fixture()
@@ -22,6 +25,10 @@ def data_dirs(tmp_path, monkeypatch):
     """
     Point the inbound routes at a fresh temp data dir and create the three
     managed subfolders. Returns the paths so tests can seed files directly.
+
+    The SQLite store is redirected to a temp catalog.db too, so every test
+    starts with a clean database — no job left "running" by one test can
+    409 the next one, and no review state leaks across tests.
     """
     input_dir = tmp_path / "input_images"
     inbound_dir = tmp_path / "inbound"
@@ -35,6 +42,8 @@ def data_dirs(tmp_path, monkeypatch):
     # Export responses report csv_path relative to APP_DATA_PATH — keep that
     # consistent with the temp layout so relative_to() doesn't blow up.
     monkeypatch.setattr(inbound_routes, "APP_DATA_PATH", tmp_path)
+    # Fresh SQLite database per test.
+    monkeypatch.setattr(inbound_store, "DB_PATH", tmp_path / "catalog.db")
 
     return {
         "root": tmp_path,
@@ -46,19 +55,35 @@ def data_dirs(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def inbound_client(data_dirs):
-    """TestClient wired to the temp data dirs, with a clean job registry."""
+    """TestClient wired to the temp data dirs + temp SQLite store."""
     from service_photo.main import app
-
-    # Each test starts with an empty in-memory job registry so a job left
-    # "running" by one test can't 409 the next one.
-    with inbound_routes._jobs_lock:
-        inbound_routes._jobs.clear()
 
     with TestClient(app) as client:
         yield client
 
-    with inbound_routes._jobs_lock:
-        inbound_routes._jobs.clear()
+
+def seed_artifact(data_dirs, extraction_id="extraction_2026-06-12T00-00-00Z__img1", **overrides):
+    """Write a minimal extraction artifact into the temp inbound/ folder.
+
+    Review endpoints 404 unless the extraction_id names a real artifact, so
+    tests that exercise review/approve/export call this first. Returns the
+    extraction_id for convenience.
+    """
+    artifact = {
+        "meta": {"image_files": ["img1.jpg"], "model": "fake-model", "schema_valid": True},
+        "response": {
+            "overview": {"product_name": "Nikon Z6", "brand": "Nikon", "model": "Z6"},
+            "description": {"short_title": "Nikon Z6 body"},
+            "specifications": {},
+            "accessories": {},
+        },
+        "pricing": None,
+    }
+    artifact.update(overrides)
+    (data_dirs["inbound"] / f"{extraction_id}.json").write_text(
+        json.dumps(artifact), encoding="utf-8"
+    )
+    return extraction_id
 
 
 # --- Tiny real image payloads -------------------------------------------------

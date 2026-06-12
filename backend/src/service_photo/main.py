@@ -32,11 +32,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Log startup configuration on launch."""
+    """Log startup configuration and prepare the SQLite durability layer."""
     logger.info("Service Photo POC starting up")
     logger.info("Database: %s", settings.DATABASE_URL.split("@")[-1])
     logger.info("Gemini mode: %s", "mock" if settings.USE_MOCK_GEMINI else "real")
     logger.info("Storage path: %s", settings.STORAGE_BASE_PATH)
+    # Create the inbound-pipeline SQLite schema (jobs, review state, audit)
+    # up front so the first request doesn't pay the DDL cost and a bad
+    # APP_DATA_DIR surfaces as a startup failure, not a mid-session 500.
+    from service_photo.services import inbound_store
+    inbound_store.init_db()
+    logger.info("Inbound SQLite store ready: %s", inbound_store.DB_PATH)
     yield
     logger.info("Service Photo POC shutting down")
 

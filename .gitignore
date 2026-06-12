@@ -1,4 +1,4 @@
-# --- Python ---
+﻿# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -39,6 +39,10 @@ CLAUDE.local.md
 /input_images/
 # Docker volume mount used for local hosted-mode testing
 /_local_data/
+# SQLite review/job store (Phase 7A) — runtime state; lives on the volume in prod
+/catalog.db
+/catalog.db-wal
+/catalog.db-shm
 
 # --- Alembic local overrides ---
 alembic.ini.local

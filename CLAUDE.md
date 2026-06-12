@@ -25,6 +25,8 @@ See [`docs/00_project_documentation.md`](docs/00_project_documentation.md) for f
 
 **Phase 7H (Production Hardening) — branch `feat/production-hardening` (2026-06-12)** — Cloudflare Access is **live** (`https://app.catalog-capture.com`, Zero Trust team `sbf322`, One-time PIN + email allowlist; the "pending" note in Phase M above is stale). Hardening pass shipped on this branch: (a) CSV spreadsheet-formula-injection escaping in `_normalize_cell` (leading `=`/`+`/`-`/`@`/tab/CR on *text* cells gets a `'` prefix; numeric cells exempt); (b) single-active-extraction lock — a second `POST /inbound/extract` while one runs returns `409 extraction_already_running`; (c) Gemini client timeout (`GEMINI_TIMEOUT_SECONDS`, default 150s) + transient-error retry (`GEMINI_MAX_RETRIES`, default 2; backoff 3/8/15s) + per-call token-usage log lines (`gemini_call_ok …`); (d) **parallel extraction** — images run through a `ThreadPoolExecutor` bounded by `EXTRACTION_CONCURRENCY` (default 3; 1 = old sequential behavior; mind Gemini RPM limits before raising); (e) upload magic-byte sniffing (`_sniff_image_format` — extension alone no longer admits a file) + 50-files-per-request cap; (f) `GET /healthz` + Docker `HEALTHCHECK`; (g) 48 tests for the `/inbound` pipeline in `backend/tests/inbound/` (filesystem-only, no Postgres needed); (h) GitHub Actions CI (`.github/workflows/ci.yml`: ruff + full pytest with a Postgres service container, frontend build); (i) ruff config in `backend/pyproject.toml` (rules F/E9/B/PLE only — style rules deliberately off).
 
+**Phase 7A (SQLite Durability) — branch `feat/sqlite-durability` (2026-06-12, PR #3 merged earlier same day)** — `services/inbound_store.py` (stdlib sqlite3, WAL mode, file at `<APP_DATA_PATH>/catalog.db`) replaces (a) the in-memory `_jobs` dict and (b) browser-localStorage review state. Five tables: `extraction_jobs`, `extraction_job_images`, `review_items` (JSON-blob edits — draft layer stays as `inbound/*.json` files), `review_events` (append-only audit trail), `exports`. New endpoints: `PUT /inbound/review/{id}`, `POST`/`DELETE /inbound/review/{id}/approve`; `GET /inbound` items now carry a `review` block. **Export contract changed:** client sends `{extraction_ids}` only; the server builds the CSV from stored *approved* snapshots and 400s on any unapproved id — the footer button no longer bulk-approves (gotcha #13 fixed; `approved_at`/`approved_by` CSV columns now carry real approval provenance). Audit actor comes from the `Cf-Access-Authenticated-User-Email` header Cloudflare Access injects (falls back to `local-dev`). Dockerfile runs `--workers ${WEB_CONCURRENCY:-2}` — the single-worker constraint is lifted. Frontend autosaves edits (800 ms debounce, flush on Done Editing / approve / export) and one-time-migrates the old localStorage key server-side, then deletes it.
+
 Full task checklist: [`docs/progress.md`](docs/progress.md)
 
 ### The pivot (read this before touching anything)
@@ -149,20 +151,25 @@ listing_exports
 
 ## API Endpoints
 
-### Active — per-image inbound pipeline (filesystem-backed, no DB)
+### Active — per-image inbound pipeline (filesystem artifacts + SQLite review/job state)
 
 ```
-GET    /api/v1/inbound                       list all extraction JSONs in inbound/
+GET    /api/v1/inbound                       list all extraction JSONs in inbound/ (each item carries its saved `review` block, or null)
 GET    /api/v1/inbound/input-images          list files in input_images/ (Upload screen left rail)
 POST   /api/v1/inbound/input-images          multipart upload — drag-and-drop into input_images/ (25 MB/file cap, safe-basename + extension whitelist, collision-safe rename)
 GET    /api/v1/inbound/images/{filename}     serve image from input_images/ (path-traversal defended)
 GET    /api/v1/inbound/batches               group artifacts by (batch_name, batch_started_at_utc) for Recent Batches screen
-POST   /api/v1/inbound/extract               kick off Gemini over input_images/ — combined extraction+pricing in one call (purges inbound/ first, runs in daemon thread, accepts optional {batch_name})
-GET    /api/v1/inbound/extract/{job_id}      poll extraction progress (status, completed, current_image, per-image results)
-POST   /api/v1/inbound/export                bulk-write listings_<UTC>.csv to exports/
+POST   /api/v1/inbound/extract               kick off Gemini over input_images/ — combined extraction+pricing in one call (purges inbound/ + review rows first, runs in daemon thread, accepts optional {batch_name})
+GET    /api/v1/inbound/extract/{job_id}      poll extraction progress (SQLite-backed; works across workers and survives restarts)
+PUT    /api/v1/inbound/review/{id}           save a card's edited content (audit event: 'edited')
+POST   /api/v1/inbound/review/{id}/approve   approve a card, snapshotting the on-screen content (audit: 'approved')
+DELETE /api/v1/inbound/review/{id}/approve   remove approval, content untouched (audit: 'unapproved')
+POST   /api/v1/inbound/export                body {extraction_ids} — CSV built from server-stored APPROVED snapshots only; 400 on any unapproved id
+GET    /api/v1/inbound/exports/{filename}    stream a written CSV as a browser download
+DELETE /api/v1/inbound/data                  full reset: wipes the three dirs AND every SQLite table
 ```
 
-**Extraction job tracking is in-memory** — `_jobs` dict in `inbound_routes.py` keyed by job_id. Survives server uptime only; a restart drops any in-flight job state (but completed JSONs on disk remain authoritative). Good enough for a POC; promote to SQLite if durability is ever needed.
+**Extraction job tracking + review state live in SQLite** — `services/inbound_store.py`, file at `<APP_DATA_PATH>/catalog.db` (`/data/catalog.db` on Railway). Stdlib `sqlite3`, WAL mode, per-call connections. The single-active-extraction 409 lock is a `BEGIN IMMEDIATE` check-and-insert, safe across worker processes. Orphaned jobs (server died mid-run; heartbeat `updated_at_utc` older than 300s) flip to `failed` lazily on read — never swept unconditionally at startup, so a respawned worker can't kill a sibling's live run.
 
 ### Phase 5 pricing artifacts (single-pass, shape)
 
@@ -239,7 +246,7 @@ Phase 6 is closed. Phase 7 is open — see [`docs/claude_code_phase7_handoff.md`
 
 14. **`APP_DATA_DIR` controls where filesystem state lives.** In container mode it defaults to `/data` (mounted Railway volume); in local dev it defaults to the repo root so `dev.bat` keeps writing to `inbound/`, `input_images/`, `exports/` as before. `inbound_routes.py` reads paths from `APP_DATA_PATH` — do not hardcode `REPO_ROOT / "inbound"` etc. The export-response `csv_path` is reported relative to `APP_DATA_PATH`, not `REPO_ROOT`.
 
-15. **Single uvicorn worker is mandatory in the container.** `_jobs` in `inbound_routes.py` is in-process. The `Dockerfile` CMD pins `--workers 1`. Do not raise this until `_jobs` is promoted to durable storage (Phase 7A). Multiple workers will silently round-robin polling requests across processes and break progress reporting.
+15. **~~Single uvicorn worker is mandatory in the container~~ — lifted in Phase 7A.** Job state now lives in SQLite (`services/inbound_store.py`), so polling works across worker processes. The Dockerfile runs `--workers ${WEB_CONCURRENCY:-2}`. (Historical: the in-memory `_jobs` dict forced `--workers 1` until 2026-06-12.)
 
 16. **The `/jobs` pipeline (dormant) loads `contracts/gemini_response_schema.json` at import time.** `submit_service.py` walks parent dirs from its installed location looking for `contracts/`. The Dockerfile drops a copy at `/contracts` so the walk-up succeeds even though the active `/inbound` flow doesn't need it. If you delete `COPY contracts /contracts` from the Dockerfile, container startup will crash on import.
 
@@ -254,6 +261,16 @@ Phase 6 is closed. Phase 7 is open — see [`docs/claude_code_phase7_handoff.md`
 21. **Browser CSV downloads use a streaming GET endpoint, not the export POST response.** `POST /inbound/export` writes the CSV to `/data/exports/` and returns JSON with `csv_filename`. `GET /inbound/exports/{filename}` streams that file with `media_type="text/csv", filename=...` — `FileResponse(filename=...)` adds `Content-Disposition: attachment` automatically. Frontend triggers the download via a hidden `<a download href={exportDownloadUrl(...)}>` click in `InboundScreen.tsx` so the SPA state isn't disturbed. Path-traversal defense: `_SAFE_CSV_FILENAME` regex (`^[A-Za-z0-9._-]+\.csv$`) plus a resolved-path containment check against `EXPORTS_DIR`. Reuse this pattern for any future filename-in-URL endpoint.
 
 22. **`DELETE /api/v1/inbound/data` has no server-side auth.** The "Clear Data" button on the Upload screen calls this endpoint to wipe `input_images/`, `inbound/`, and `exports/` on the volume. The frontend gates the call behind `window.confirm`; the backend assumes the request is authorized. **This is correct only because Cloudflare Access goes in front of the deployment.** If the Access layer is delayed, treat this endpoint as the same risk surface as the rest of the app — anyone with the URL can wipe state. The frontend also clears the two localStorage keys (`service-photo:active-extraction-v1`, `service-photo:inbound-review-state-v2`) so the UI doesn't show review state for items that no longer exist on disk.
+
+### Phase 7A gotchas (do not reintroduce)
+
+23. **`services/inbound_store.py` is stdlib `sqlite3` on purpose.** Don't reach for SQLAlchemy here — the SQLAlchemy/Postgres stack belongs to the dormant `/jobs` pipeline and is slated for deletion. Tests redirect the store with `monkeypatch.setattr(inbound_store, "DB_PATH", tmp_path / "catalog.db")` (same pattern as the dir constants). Every store function opens its own short-lived connection; the schema is created lazily on first connect per path and eagerly at app startup via `init_db()` in `main.py`'s lifespan.
+
+24. **Orphaned-job recovery is lazy, never a startup sweep.** A job row left `queued`/`running` by a dead server flips to `failed` only when read (or when a new job is created) AND its `updated_at_utc` heartbeat is >300s old (`STALE_ACTIVE_JOB_SECONDS`). An unconditional "mark all active as failed at startup" looks simpler but is wrong with multiple workers: a respawned worker would kill a job legitimately running in a sibling worker's thread.
+
+25. **Approval lives only on the server now.** The frontend's `approved` flag is a mirror of the API response — `handleApproveToggle` updates local state only after the approve/unapprove call succeeds, so the UI can never claim an approval the audit trail doesn't have. Export sends ids only; content always comes from the server's `review_items` snapshots. Don't add a client-side path that bypasses this (that was gotcha #13, now fixed).
+
+26. **`review_items` rows are purged when a new extraction starts; `review_events` never are** (except by Clear Data). If you add anything keyed by `extraction_id`, decide explicitly which side of that line it lives on.
 
 ---
 

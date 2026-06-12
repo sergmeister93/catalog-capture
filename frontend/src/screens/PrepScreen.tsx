@@ -143,7 +143,8 @@ export default function PrepScreen() {
       window.alert(
         `Cleared ${result.input_images_deleted} image(s), ` +
           `${result.inbound_deleted} extraction(s), ` +
-          `${result.exports_deleted} export(s).`,
+          `${result.exports_deleted} export(s), ` +
+          `${result.db_rows_deleted} review/job record(s).`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

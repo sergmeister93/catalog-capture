@@ -97,9 +97,12 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,os,sys; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8000\")}/healthz', timeout=4).status == 200 else 1)"
 
-# Single worker is mandatory: api/inbound_routes.py keeps extraction job
-# state in an in-process dict (_jobs). Multiple workers would silently
-# round-robin polling requests across processes and "lose" jobs. If/when
-# _jobs is promoted to SQLite (Phase 7A), this can be raised.
+# Phase 7A: job + review state lives in SQLite on the /data volume (WAL mode),
+# so multiple workers are safe — polling reads the same database no matter
+# which process answers, and the single-active-extraction lock is enforced in
+# the database. WEB_CONCURRENCY tunes the worker count; 2 is a sensible
+# default for Railway's 1 GB instance. The Gemini extraction itself runs in a
+# thread inside whichever worker took the POST, bounded by
+# EXTRACTION_CONCURRENCY.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "uvicorn service_photo.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "uvicorn service_photo.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-2}"]

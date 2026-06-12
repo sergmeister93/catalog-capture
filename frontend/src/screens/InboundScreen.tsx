@@ -6,24 +6,27 @@
  * four sections (overview, description, specifications, accessories). The user
  * can toggle each card into edit mode to fix any field, then mark it approved.
  *
- * State persistence:
- *   Edits and approval flags are kept in localStorage keyed by extraction_id,
- *   so a refresh mid-review doesn't lose work. Nothing is written to the
- *   backend until the user clicks "Approve All & Export to CSV", which sends
- *   every approved card to POST /api/v1/inbound/export.
+ * State persistence (Phase 7A — server-side):
+ *   Edits and approvals live in SQLite on the server. Edits autosave on a
+ *   short debounce (and flush when leaving edit mode); Approve / Remove
+ *   Approval are immediate API calls. Every change lands in an append-only
+ *   audit trail with the reviewer's identity (from Cloudflare Access).
+ *   Export sends only the approved extraction ids — the server builds the
+ *   CSV from its stored snapshots, so nothing unapproved can be exported.
  *
- * Why localStorage instead of backend writes per edit:
- *   This is a POC checkpoint. The CSV is the durable artifact; edits in the
- *   browser are working state. Keeps the backend stateless, no DB involved.
+ *   A one-time migration pushes any review state left over in the old
+ *   localStorage key to the server, then deletes the key.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  approveReview,
   exportInbound,
   exportDownloadUrl,
   getExtractionStatus,
   listInbound,
-  type ExportRequestItem,
+  saveReview,
+  unapproveReview,
   type ExportResponse,
   type ExtractionJob,
   type InboundItem,
@@ -37,30 +40,33 @@ import {
   readActiveExtraction,
 } from "@/state/extractionHandoff";
 
-// --- Local state shapes (per-card, persisted to localStorage) ----------------
+// --- Local state shapes (per-card; server is the source of truth) ------------
 
 interface CardState {
   /** Edited copy of the Gemini response — starts as a deep clone of the original. */
   edited: ListingResponse;
   /**
    * Edited copy of the pricing block, or null when Gemini returned no pricing
-   * in the combined extraction+pricing call. Survives refresh (localStorage)
-   * so a reviewer can come back to an in-progress edit session.
+   * in the combined extraction+pricing call.
    */
   editedPricing: PricingBlock | null;
   approved: boolean;
   approvedAt: string | null;
-  /** Whether the card is currently in edit mode (UI affordance only). */
+  /** Whether the card is currently in edit mode (UI affordance only — never persisted). */
   editing: boolean;
 }
 
 type CardStateMap = Record<string, CardState>;
 
-// Bumped v1 → v2 for Phase 5. The shape change (added editedPricing) means old
-// v1 state objects are missing a field. Rather than writing a migration, we
-// let the old key fall through and re-initialise from scratch — no loss of
-// in-flight data for most users and simpler code.
-const STORAGE_KEY = "service-photo:inbound-review-state-v2";
+// Legacy localStorage key (pre-Phase-7A). Review state now lives server-side;
+// this key is only read once on load to migrate any leftover state to the
+// server, then removed. Delete this constant when the migration code goes.
+const LEGACY_STORAGE_KEY = "service-photo:inbound-review-state-v2";
+
+// Debounce for autosaving in-progress edits to the server. Long enough to
+// not fire on every keystroke, short enough that closing the tab rarely
+// loses more than a second of typing.
+const SAVE_DEBOUNCE_MS = 800;
 
 // --- Top-level loader state --------------------------------------------------
 
@@ -81,10 +87,59 @@ interface InboundScreenProps {
 
 export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
-  const [cardStates, setCardStates] = useState<CardStateMap>(() => loadCardStates());
+  // Card state is seeded from the server's stored review state on load
+  // (see initialiseMissing) — the empty map here is just the pre-load value.
+  const [cardStates, setCardStates] = useState<CardStateMap>({});
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+
+  // --- Debounced server autosave -------------------------------------------
+  // One pending timer per card. cardStatesRef mirrors cardStates so a timer
+  // firing later reads the *current* edits, not the ones captured when the
+  // timer was scheduled.
+  const saveTimers = useRef<Record<string, number>>({});
+  const cardStatesRef = useRef<CardStateMap>(cardStates);
+  useEffect(() => {
+    cardStatesRef.current = cardStates;
+  }, [cardStates]);
+
+  /** Push one card's current edits to the server right now. */
+  const saveCardNow = useCallback(async (extractionId: string) => {
+    const timers = saveTimers.current;
+    if (timers[extractionId]) {
+      window.clearTimeout(timers[extractionId]);
+      delete timers[extractionId];
+    }
+    const state = cardStatesRef.current[extractionId];
+    if (!state) return;
+    try {
+      await saveReview(extractionId, state.edited, state.editedPricing);
+    } catch (err) {
+      // Autosave failure isn't fatal — the next edit or the approve/export
+      // call will retry. Log it so a persistent problem is visible.
+      console.warn("review autosave failed", extractionId, err);
+    }
+  }, []);
+
+  /** (Re)schedule a debounced save for one card. */
+  const scheduleSave = useCallback(
+    (extractionId: string) => {
+      const timers = saveTimers.current;
+      if (timers[extractionId]) window.clearTimeout(timers[extractionId]);
+      timers[extractionId] = window.setTimeout(() => {
+        delete timers[extractionId];
+        void saveCardNow(extractionId);
+      }, SAVE_DEBOUNCE_MS);
+    },
+    [saveCardNow]
+  );
+
+  /** Flush every pending autosave — called before approve-dependent actions. */
+  const flushAllSaves = useCallback(async () => {
+    const pendingIds = Object.keys(saveTimers.current);
+    await Promise.all(pendingIds.map((id) => saveCardNow(id)));
+  }, [saveCardNow]);
 
   // --- Extraction job state ---
   // `extraction` is the most recent job snapshot from the backend. It drives
@@ -114,10 +169,54 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
     void refresh();
   }, [refresh]);
 
-  // Persist card state to localStorage on every change.
+  // --- One-time legacy localStorage migration -------------------------------
+  // Pre-Phase-7A review state lived in the browser. If the old key is still
+  // present, push every entry that matches a current artifact to the server
+  // (edits + approval), adopt it into local state so the UI reflects it
+  // immediately, then delete the key. Runs once per mount, after first load.
+  const migratedRef = useRef(false);
   useEffect(() => {
-    saveCardStates(cardStates);
-  }, [cardStates]);
+    if (migratedRef.current || loadState.kind !== "loaded") return;
+    migratedRef.current = true;
+
+    let legacy: CardStateMap | null = null;
+    try {
+      const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (raw) legacy = JSON.parse(raw) as CardStateMap;
+    } catch {
+      legacy = null;
+    }
+    if (!legacy) return;
+
+    const knownIds = new Set(loadState.items.map((it) => it.extraction_id));
+    const entries = Object.entries(legacy).filter(([id]) => knownIds.has(id));
+    if (entries.length === 0) {
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+      return;
+    }
+
+    // Show the migrated state in the UI right away (server round-trips below
+    // make it durable; the audit trail records them as edits/approvals).
+    setCardStates((prev) => {
+      const next = { ...prev };
+      for (const [id, s] of entries) {
+        next[id] = { ...s, editing: false };
+      }
+      return next;
+    });
+
+    void (async () => {
+      for (const [id, s] of entries) {
+        try {
+          await saveReview(id, s.edited, s.editedPricing);
+          if (s.approved) await approveReview(id, s.edited, s.editedPricing);
+        } catch (err) {
+          console.warn("localStorage review migration failed for", id, err);
+        }
+      }
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    })();
+  }, [loadState]);
 
   // --- Extraction: start + poll ---
   //
@@ -222,7 +321,6 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
   );
 
   const allApproved = items.length > 0 && approvedCount === items.length;
-  const anyToExport = items.length > 0;
 
   // --- Per-card actions ---
 
@@ -231,7 +329,11 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
   }
 
   function handleToggleEdit(it: InboundItem) {
+    const wasEditing = cardStates[it.extraction_id]?.editing ?? false;
     setCard(it.extraction_id, (s) => ({ ...s, editing: !s.editing }));
+    // "Done Editing" → flush the debounced autosave immediately so the
+    // server has the final content the reviewer settled on.
+    if (wasEditing) void saveCardNow(it.extraction_id);
   }
 
   function handleFieldChange(
@@ -246,15 +348,35 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
       sectionObj[field] = value === "" ? null : value;
       return { ...s, edited: { ...s.edited, [section]: sectionObj } as ListingResponse };
     });
+    scheduleSave(extractionId);
   }
 
-  function handleApproveToggle(it: InboundItem) {
-    setCard(it.extraction_id, (s) => ({
-      ...s,
-      approved: !s.approved,
-      approvedAt: !s.approved ? new Date().toISOString() : null,
-      editing: false, // closing edit mode on approve avoids accidentally editing approved content
-    }));
+  async function handleApproveToggle(it: InboundItem) {
+    const state = cardStates[it.extraction_id];
+    if (!state) return;
+    // Cancel any pending autosave — the approve call carries the current
+    // content anyway, and un-approve doesn't touch content.
+    const timers = saveTimers.current;
+    if (timers[it.extraction_id]) {
+      window.clearTimeout(timers[it.extraction_id]);
+      delete timers[it.extraction_id];
+    }
+    try {
+      const review = state.approved
+        ? await unapproveReview(it.extraction_id)
+        : await approveReview(it.extraction_id, state.edited, state.editedPricing);
+      setCard(it.extraction_id, (s) => ({
+        ...s,
+        approved: review.approved,
+        approvedAt: review.approved_at_utc,
+        editing: false, // closing edit mode on approve avoids accidentally editing approved content
+      }));
+      setExportError(null);
+    } catch (err) {
+      // Surface the failure in the footer strip — the local state is left
+      // unchanged so the UI never claims an approval the server didn't record.
+      setExportError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   /**
@@ -306,49 +428,33 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
       }
       return { ...s, editedPricing: next };
     });
+    scheduleSave(extractionId);
   }
 
-  // --- Bulk approve + export ---
+  // --- Export approved items ---
+  //
+  // Phase 7A: the footer button no longer bulk-approves. It exports ONLY the
+  // cards the reviewer explicitly approved — the server enforces the same
+  // gate, so an unapproved id can't slip into the CSV from any client.
 
-  async function handleApproveAllAndExport() {
+  async function handleExportApproved() {
     setExporting(true);
     setExportError(null);
     setExportResult(null);
     try {
-      // Step 1: bulk-approve any pending cards (also persists to localStorage via effect).
-      const now = new Date().toISOString();
-      setCardStates((prev) => {
-        const next = { ...prev };
-        for (const it of items) {
-          const cur = next[it.extraction_id];
-          if (cur && !cur.approved) {
-            next[it.extraction_id] = { ...cur, approved: true, approvedAt: now, editing: false };
-          }
-        }
-        return next;
-      });
+      // Make sure any in-flight debounced edits are on the server before the
+      // CSV is built from the server's snapshots.
+      await flushAllSaves();
 
-      // Step 2: build payload from current edited state. Re-read from cardStates
-      // via items mapping to ensure we send what's on screen, including any
-      // not-yet-approved cards that are now approved-by-this-action.
-      const payload: ExportRequestItem[] = items.map((it) => {
-        const state = cardStates[it.extraction_id];
-        // If we just bulk-approved, `state.edited` is still the most recent
-        // edited copy — bulk approve only flips the flag.
-        const edited = state?.edited ?? (it.response as ListingResponse);
-        // Include the reviewer's edited pricing when we have one. Absence
-        // produces blank pricing columns on the CSV row, which is correct
-        // for items that were never priced.
-        const editedPricing = state?.editedPricing ?? it.pricing ?? null;
-        return {
-          extraction_id: it.extraction_id,
-          image_files: it.image_files,
-          response: edited,
-          pricing: editedPricing,
-        };
-      });
+      const approvedIds = items
+        .filter((it) => cardStates[it.extraction_id]?.approved)
+        .map((it) => it.extraction_id);
+      if (approvedIds.length === 0) {
+        setExportError("Approve at least one item before exporting.");
+        return;
+      }
 
-      const result = await exportInbound(payload, "ui-user");
+      const result = await exportInbound(approvedIds);
       setExportResult(result);
 
       // Trigger a browser download of the CSV. We keep the file on the server
@@ -456,6 +562,11 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
             <div style={{ fontSize: "13px" }}>
               <strong>{approvedCount}</strong> of {items.length} item{items.length === 1 ? "" : "s"} approved
               {allApproved && <span style={{ marginLeft: "8px", color: "var(--status-success)" }}>✓ Ready to export</span>}
+              {!allApproved && approvedCount > 0 && (
+                <span className="text-muted" style={{ marginLeft: "8px", fontSize: "12px" }}>
+                  Only approved items are exported.
+                </span>
+              )}
             </div>
             {exportResult && (
               <div style={{ fontSize: "12px", color: "var(--status-success)" }}>
@@ -468,9 +579,10 @@ export default function InboundScreen({ batchId }: InboundScreenProps = {}) {
           </div>
           <button
             className="btn btn-primary"
-            onClick={handleApproveAllAndExport}
-            disabled={!anyToExport || exporting}
+            onClick={handleExportApproved}
+            disabled={approvedCount === 0 || exporting}
             style={{ minWidth: "240px" }}
+            title={approvedCount === 0 ? "Approve at least one item to enable export" : undefined}
           >
             {exporting ? "Exporting…" : "Export Approved Items"}
           </button>
@@ -820,48 +932,39 @@ function formatLoose(value: unknown): string {
   return String(value);
 }
 
-function loadCardStates(): CardStateMap {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as CardStateMap;
-  } catch {
-    return {};
-  }
-}
-
-function saveCardStates(map: CardStateMap): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // localStorage might be disabled (private mode); silently ignore — the
-    // user just loses persistence across refresh, the screen still works.
-  }
-}
-
 /**
  * Add / refresh card state for each item.
  *
- * - Brand new extraction_id → initialise full card state from item.
- * - Already seen extraction_id → preserve user's `edited` and `editedPricing`
- *   edits, but adopt the backend's newest pricing block if one exists and
- *   we don't yet have one locally. This is how a fresh pricing pass surfaces
- *   on the card without wiping a reviewer's in-progress content edits.
+ * - Brand new extraction_id → seed from the server's stored review state
+ *   when one exists (edits + approval survive refreshes, devices, and
+ *   browser resets), otherwise from the raw Gemini response.
+ * - Already seen extraction_id → preserve the in-session `edited` /
+ *   `editedPricing` (most recent keystrokes win over a server round-trip),
+ *   but adopt the backend's newest pricing block if one exists and we don't
+ *   yet have one locally.
  */
 function initialiseMissing(prev: CardStateMap, items: InboundItem[]): CardStateMap {
   const next = { ...prev };
   for (const it of items) {
     const existing = next[it.extraction_id];
     if (!existing) {
+      const review = it.review;
       next[it.extraction_id] = {
-        // Deep-clone the response so edits don't mutate the on-disk shape we
-        // re-read on refresh. Falls back to an empty shell if Gemini failed.
-        edited: it.response
-          ? (JSON.parse(JSON.stringify(it.response)) as ListingResponse)
-          : ({ overview: {}, description: {}, specifications: {}, accessories: {} } as ListingResponse),
-        editedPricing: it.pricing ? (JSON.parse(JSON.stringify(it.pricing)) as PricingBlock) : null,
-        approved: false,
-        approvedAt: null,
+        // Deep-clone so edits don't mutate the shapes we re-read on refresh.
+        // Server review state wins; fall back to the raw Gemini response,
+        // then to an empty shell if Gemini failed.
+        edited: review
+          ? (JSON.parse(JSON.stringify(review.edited_response)) as ListingResponse)
+          : it.response
+            ? (JSON.parse(JSON.stringify(it.response)) as ListingResponse)
+            : ({ overview: {}, description: {}, specifications: {}, accessories: {} } as ListingResponse),
+        editedPricing: review?.edited_pricing
+          ? (JSON.parse(JSON.stringify(review.edited_pricing)) as PricingBlock)
+          : it.pricing
+            ? (JSON.parse(JSON.stringify(it.pricing)) as PricingBlock)
+            : null,
+        approved: review?.approved ?? false,
+        approvedAt: review?.approved_at_utc ?? null,
         editing: false,
       };
     } else if (it.pricing && !existing.editedPricing) {
