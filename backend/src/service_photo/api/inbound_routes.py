@@ -1,29 +1,35 @@
 """
-Inbound-folder routes — filesystem-backed, no database.
+Inbound-folder routes — filesystem artifacts + SQLite review/job state.
 
 These endpoints serve the new UI flow where each photo is its own product
-listing. The Gemini extraction CLI (scripts/run_gemini_extraction.py) drops
-one JSON per image into <repo>/inbound/. The UI reads them via these routes,
-lets a human edit + approve each card, and finally exports an approved
-selection to a single CSV in <repo>/exports/.
+listing. Gemini extraction drops one JSON per image into inbound/ (the
+immutable "draft" layer). Human review state — edits, approvals, the audit
+trail, and extraction-job progress — lives in SQLite at
+<APP_DATA_PATH>/catalog.db (see services/inbound_store.py), which is what
+lets uvicorn run multiple workers and survive restarts.
 
-This intentionally bypasses the existing /jobs DB pipeline. We may unify them
-later, but for now keep them isolated so changes here don't break the 47/47
-backend test suite.
+This intentionally bypasses the dormant /jobs Postgres pipeline.
 
 Endpoints:
-  GET  /api/v1/inbound                       — list every extraction artifact
-  GET  /api/v1/inbound/input-images          — list files in input_images/ (for Prep)
-  GET  /api/v1/inbound/images/{filename}     — serve an image by filename
-  GET  /api/v1/inbound/batches               — group artifacts by batch
-  POST /api/v1/inbound/extract               — kick off Gemini over input_images/
-  GET  /api/v1/inbound/extract/{job_id}      — poll extraction progress/status
-  POST /api/v1/inbound/export                — write an approved-set CSV
+  GET    /api/v1/inbound                          — list artifacts + saved review state
+  GET    /api/v1/inbound/input-images             — list files in input_images/ (for Prep)
+  POST   /api/v1/inbound/input-images             — drag-and-drop upload
+  GET    /api/v1/inbound/images/{filename}        — serve an image by filename
+  GET    /api/v1/inbound/batches                  — group artifacts by batch
+  POST   /api/v1/inbound/extract                  — kick off Gemini over input_images/
+  GET    /api/v1/inbound/extract/{job_id}         — poll extraction progress/status
+  PUT    /api/v1/inbound/review/{extraction_id}   — save a card's edited content
+  POST   /api/v1/inbound/review/{extraction_id}/approve   — approve a card
+  DELETE /api/v1/inbound/review/{extraction_id}/approve   — remove approval
+  POST   /api/v1/inbound/export                   — write a CSV of approved cards
+  GET    /api/v1/inbound/exports/{filename}       — download a written CSV
+  DELETE /api/v1/inbound/data                     — full reset (files + DB)
 
-Filesystem layout (all paths relative to the repo root):
-  inbound/    — one extraction_<timestamp>__<image-stem>.json per image
+Filesystem layout (under APP_DATA_PATH):
+  inbound/      — one extraction_<timestamp>__<image-stem>.json per image
   input_images/ — the source photos those extractions came from
-  exports/    — written CSVs land here (created on demand, gitignored)
+  exports/      — written CSVs land here (created on demand, gitignored)
+  catalog.db    — SQLite: jobs, review state, audit trail, export records
 """
 
 import csv
@@ -36,10 +42,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from service_photo.services import inbound_store
 from service_photo.services.inbound_extraction import (
     IMAGE_SUFFIXES,
     ImageResult,
@@ -70,7 +77,28 @@ _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 router = APIRouter()
 
 
+def _actor(request: Request) -> str:
+    """Identity for the audit trail.
+
+    In hosted mode every request passes through Cloudflare Access, which
+    injects the authenticated user's email in this header — so we get a real
+    "who did this" for free, with zero auth code. Local dev has no Access
+    layer, so fall back to a fixed marker.
+    """
+    return request.headers.get("Cf-Access-Authenticated-User-Email") or "local-dev"
+
+
 # --- Schemas -----------------------------------------------------------------
+
+class ReviewState(BaseModel):
+    """Server-stored review state for one card (was browser localStorage)."""
+    edited_response: dict = Field(..., description="The human-edited copy of the Gemini response")
+    edited_pricing: dict | None = Field(None, description="Edited pricing block, or null when the item has none")
+    approved: bool
+    approved_at_utc: str | None = None
+    approved_by: str | None = None
+    updated_at_utc: str
+
 
 class InboundItem(BaseModel):
     """One extraction artifact, ready for the UI to render as a card."""
@@ -86,6 +114,9 @@ class InboundItem(BaseModel):
     # a failed pricing is indistinguishable from a failed extraction, so the
     # existing `meta.api_error` path covers it.
     pricing: dict | None = Field(None, description="Pricing block from the combined extraction call, or null when Gemini returned none.")
+    # Phase 7A: the saved review state (edits + approval), or null when the
+    # card has never been edited or approved. Replaces browser localStorage.
+    review: ReviewState | None = Field(None, description="Server-stored review state, or null if untouched.")
 
 
 class InboundListResponse(BaseModel):
@@ -136,20 +167,32 @@ class BatchesResponse(BaseModel):
     batches: list[BatchSummary]
 
 
-class ExportItem(BaseModel):
-    """One card's approved + edited content, ready for CSV serialization."""
-    extraction_id: str
-    image_files: list[str]
-    response: dict
-    # Optional pricing block. Included when the user has run Phase 5 enrichment
-    # for this card and (possibly) edited the numbers. Absence means the
-    # pricing columns on this row will be blank, not an error.
-    pricing: dict | None = None
+class ReviewSaveRequest(BaseModel):
+    """Body for PUT /inbound/review/{extraction_id} — the card's current
+    edited content. Approval state is NOT settable here; use the approve
+    endpoints so every approval lands in the audit trail explicitly."""
+    response: dict = Field(..., description="The full edited copy of the Gemini response")
+    pricing: dict | None = Field(None, description="The edited pricing block, or null when the item has none")
+
+
+class ApproveRequest(BaseModel):
+    """Body for POST /inbound/review/{extraction_id}/approve.
+
+    Carries the content currently on the reviewer's screen so approving a
+    never-edited card still snapshots exactly what the human signed off on.
+    """
+    response: dict | None = Field(None, description="Current edited response (snapshotted at approval)")
+    pricing: dict | None = Field(None, description="Current edited pricing block, if any")
 
 
 class ExportRequest(BaseModel):
-    items: list[ExportItem]
-    approved_by: str | None = None
+    """Body for POST /inbound/export.
+
+    Phase 7A contract change: the client sends only the *ids* it wants in the
+    CSV. Content comes from the server-stored, approved review snapshots —
+    never from the request — so the export is exactly what was approved.
+    """
+    extraction_ids: list[str] = Field(..., description="Approved cards to include in the CSV")
 
 
 class ExportResponse(BaseModel):
@@ -175,6 +218,10 @@ def list_inbound() -> InboundListResponse:
         # doesn't exist yet, return an empty list (not a 404).
         return InboundListResponse(items=[], inbound_dir=str(INBOUND_DIR))
 
+    # One DB read for the whole listing — review rows are keyed by
+    # extraction_id, which is the artifact filename stem.
+    reviews = inbound_store.get_all_reviews()
+
     items: list[InboundItem] = []
     json_files = sorted(INBOUND_DIR.glob("extraction_*.json"), reverse=True)
     for path in json_files:
@@ -187,6 +234,7 @@ def list_inbound() -> InboundListResponse:
         meta = raw.get("meta") or {}
         response = raw.get("response")
         image_files = list(meta.get("image_files") or [])
+        review = reviews.get(path.stem)
 
         items.append(InboundItem(
             extraction_id=path.stem,
@@ -198,6 +246,7 @@ def list_inbound() -> InboundListResponse:
             # Pricing is lifted up to the artifact root by the extraction
             # service. Absent when Gemini returned no pricing for this item.
             pricing=raw.get("pricing"),
+            review=ReviewState(**review) if review else None,
         ))
 
     return InboundListResponse(items=items, inbound_dir=str(INBOUND_DIR))
@@ -558,10 +607,12 @@ def download_inbound_export(filename: str):
 # delete) because the whole app is gated by Cloudflare Access in hosted mode.
 
 class ClearDataResponse(BaseModel):
-    """Counts of files removed from each managed directory."""
+    """Counts of files removed from each managed directory, plus the total
+    number of database rows wiped (jobs, review state, audit, export records)."""
     input_images_deleted: int
     inbound_deleted: int
     exports_deleted: int
+    db_rows_deleted: int
 
 
 def _purge_dir_contents(directory: Path) -> int:
@@ -582,11 +633,14 @@ def _purge_dir_contents(directory: Path) -> int:
 
 @router.delete("/inbound/data", response_model=ClearDataResponse)
 def clear_all_data() -> ClearDataResponse:
-    """Wipe input_images/, inbound/, and exports/ contents on the volume."""
+    """Wipe input_images/, inbound/, exports/ on the volume AND every SQLite
+    table (jobs, review state, audit trail, export records). Full reset."""
+    db_counts = inbound_store.clear_all_tables()
     return ClearDataResponse(
         input_images_deleted=_purge_dir_contents(INPUT_IMAGES_DIR),
         inbound_deleted=_purge_dir_contents(INBOUND_DIR),
         exports_deleted=_purge_dir_contents(EXPORTS_DIR),
+        db_rows_deleted=sum(db_counts.values()),
     )
 
 
@@ -651,29 +705,9 @@ class ExtractStartRequest(BaseModel):
     )
 
 
-# Guarded in-memory job registry. A lock protects reads and writes so the
-# polling endpoint never sees a half-updated state (Python dict ops are
-# mostly atomic, but we mutate multiple fields per tick).
-_jobs: dict[str, ExtractionJob] = {}
-_jobs_lock = threading.Lock()
-
-
 def _now_iso() -> str:
     """Seconds-precision UTC ISO8601 timestamp, matches other endpoints."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _mutate_job(job_id: str, mutator) -> None:
-    """
-    Apply `mutator(job)` to the registered job under the lock. If the job
-    is missing we silently no-op — should never happen because we only call
-    this from the worker thread we just spawned.
-    """
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job is None:
-            return
-        mutator(job)
 
 
 @router.post("/inbound/extract", response_model=ExtractStartResponse, status_code=202)
@@ -719,35 +753,31 @@ def start_extraction(body: ExtractStartRequest | None = None) -> ExtractStartRes
     job_id = uuid.uuid4().hex
     # Normalize batch name: trim whitespace; treat empty as None.
     batch_name = (body.batch_name.strip() if body and body.batch_name else None) or None
-    job = ExtractionJob(
-        job_id=job_id,
-        status="queued",
-        total=len(images),
-        started_at_utc=started_at_utc,
-    )
-    with _jobs_lock:
+    try:
         # Only one extraction may run at a time: the run purges inbound/
         # before writing, so two concurrent runs would delete each other's
-        # artifacts and double the Gemini spend. Registration and the
-        # active-job check happen under the same lock so two simultaneous
-        # POSTs can't both pass the check.
-        active = next(
-            (j for j in _jobs.values() if j.status in ("queued", "running")),
-            None,
+        # artifacts and double the Gemini spend. The store enforces the
+        # check-and-register atomically (BEGIN IMMEDIATE), which holds even
+        # across multiple uvicorn worker processes.
+        inbound_store.create_job(
+            job_id=job_id,
+            total=len(images),
+            started_at_utc=started_at_utc,
+            batch_name=batch_name,
         )
-        if active is not None:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "extraction_already_running",
-                    "message": (
-                        "An extraction is already in progress "
-                        f"({active.completed} of {active.total} images done). "
-                        "Wait for it to finish before starting another."
-                    ),
-                },
-            )
-        _jobs[job_id] = job
+    except inbound_store.ActiveJobError as exc:
+        active = exc.active_job
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "extraction_already_running",
+                "message": (
+                    "An extraction is already in progress "
+                    f"({active['completed']} of {active['total']} images done). "
+                    "Wait for it to finish before starting another."
+                ),
+            },
+        ) from exc
 
     # 3. Spawn a daemon thread — we don't await it, FastAPI returns 202 now.
     #    Daemon=True so a dev-server Ctrl+C doesn't hang on an in-flight run.
@@ -764,17 +794,20 @@ def start_extraction(body: ExtractStartRequest | None = None) -> ExtractStartRes
 
 @router.get("/inbound/extract/{job_id}", response_model=ExtractionJob)
 def get_extraction_status(job_id: str) -> ExtractionJob:
-    """Return the current state of an extraction job. 404 if unknown."""
-    with _jobs_lock:
-        job = _jobs.get(job_id)
+    """Return the current state of an extraction job. 404 if unknown.
+
+    Reads from SQLite, so polling works no matter which uvicorn worker
+    handles the request, and a finished job's record survives restarts.
+    The store also flips orphaned jobs (server died mid-run, heartbeat went
+    stale) to 'failed' on read, so the UI never spins forever.
+    """
+    job = inbound_store.get_job(job_id)
     if job is None:
         raise HTTPException(
             status_code=404,
             detail={"error": "job_not_found", "message": f"No extraction job with id {job_id}."},
         )
-    # Return a copy so later mutations by the worker thread don't surprise us
-    # mid-serialization. Pydantic v2 copy is deep enough for our field types.
-    return job.model_copy(deep=True)
+    return ExtractionJob(**job)
 
 
 def _run_extraction_thread(
@@ -789,37 +822,35 @@ def _run_extraction_thread(
     transitions the job to 'failed' instead of leaving it 'running' forever.
     """
     # Flip queued → running. Worker is now alive.
-    _mutate_job(job_id, lambda j: _set(j, status="running"))
+    inbound_store.update_job(job_id, status="running")
+
+    # The run is about to purge inbound/*.json (purge_existing=True below),
+    # which orphans any saved review rows — their artifacts are gone. Clear
+    # them now so the Review screen starts fresh with the new batch. The
+    # append-only audit trail is deliberately kept.
+    inbound_store.delete_all_reviews()
 
     def _on_image_start(index: int, total: int, image_name: str) -> None:
         # Record what we're about to call Gemini for, and ensure 'total' is
         # right. (We set it at registration too — this is belt-and-suspenders
         # in case the folder changed between discovery and execution.)
-        _mutate_job(job_id, lambda j: _set(j, current_image=image_name, total=total))
+        inbound_store.update_job(job_id, current_image=image_name, total=total)
 
     def _on_image_done(index: int, total: int, result: ImageResult) -> None:
-        def apply(j: ExtractionJob) -> None:
-            j.results.append(ExtractionImageStatus(
-                image_name=result.image_name,
-                success=result.success,
-                duration_ms=result.duration_ms,
-                api_error=result.api_error,
-                schema_valid=result.schema_valid,
-                schema_error=result.schema_error,
-            ))
-            j.completed += 1
-            if result.success:
-                j.succeeded += 1
-            else:
-                j.failed += 1
-            # Images now run in parallel (EXTRACTION_CONCURRENCY), so another
-            # image's _on_image_start may have already overwritten
-            # current_image. Only clear it when the whole run is done —
-            # mid-run it always points at *some* in-flight image, which is
-            # what the progress banner wants.
-            if j.completed >= j.total:
-                j.current_image = None
-        _mutate_job(job_id, apply)
+        # One transaction: insert the per-image row and bump the job counters.
+        # current_image clears automatically when the last image lands —
+        # mid-run it always points at *some* in-flight image (images run in
+        # parallel under EXTRACTION_CONCURRENCY), which is what the progress
+        # banner wants.
+        inbound_store.record_image_result(
+            job_id=job_id,
+            image_name=result.image_name,
+            success=result.success,
+            duration_ms=result.duration_ms,
+            api_error=result.api_error,
+            schema_valid=result.schema_valid,
+            schema_error=result.schema_error,
+        )
 
     try:
         summary = run_extraction(
@@ -833,50 +864,108 @@ def _run_extraction_thread(
         )
     except (GeminiClientError, FileNotFoundError, ImportError) as exc:
         # Fatal run-level failure — we never got far enough to produce
-        # per-image results. Capture the message into a plain local before
-        # the lambda: Python unbinds `exc` when the except block exits, so a
-        # lambda closing over `exc` itself only works while called
-        # synchronously — one refactor away from a NameError.
-        error_message = str(exc)
-        _mutate_job(
+        # per-image results.
+        inbound_store.update_job(
             job_id,
-            lambda j: _set(j, status="failed", error=error_message, finished_at_utc=_now_iso(), current_image=None),
+            status="failed",
+            error=str(exc),
+            finished_at_utc=_now_iso(),
+            current_image=None,
         )
         return
     except Exception as exc:  # pragma: no cover — last-resort safety net
-        error_message = f"unexpected error: {exc!r}"
-        _mutate_job(
+        inbound_store.update_job(
             job_id,
-            lambda j: _set(
-                j,
-                status="failed",
-                error=error_message,
-                finished_at_utc=_now_iso(),
-                current_image=None,
-            ),
+            status="failed",
+            error=f"unexpected error: {exc!r}",
+            finished_at_utc=_now_iso(),
+            current_image=None,
         )
         return
 
     # Happy path: flip to completed and stamp the finish time + model.
-    _mutate_job(
+    inbound_store.update_job(
         job_id,
-        lambda j: _set(
-            j,
-            status="completed",
-            finished_at_utc=_now_iso(),
-            model=summary.model,
-            current_image=None,
-        ),
+        status="completed",
+        finished_at_utc=_now_iso(),
+        model=summary.model,
+        current_image=None,
     )
 
 
-def _set(obj, **fields) -> None:
+# --- Review endpoints (Phase 7A — replaces browser localStorage) ---------------
+
+# extraction_ids are artifact filename stems (extraction_<UTC>__<image-stem>),
+# so the same safe-character rule used for image filenames applies.
+def _require_artifact(extraction_id: str) -> None:
+    """400/404 unless `extraction_id` names a real artifact in inbound/.
+
+    Keeps junk rows out of review_items: you can only review a card that
+    actually exists on disk right now.
     """
-    Tiny helper: set several attributes on a pydantic model instance in one
-    call, so the lambdas passed to _mutate_job stay readable.
-    """
-    for key, value in fields.items():
-        setattr(obj, key, value)
+    if not _SAFE_FILENAME.match(extraction_id):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_extraction_id", "message": "Extraction id contains disallowed characters."},
+        )
+    if not (INBOUND_DIR / f"{extraction_id}.json").is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "extraction_not_found", "message": f"No extraction artifact named '{extraction_id}'."},
+        )
+
+
+@router.put("/inbound/review/{extraction_id}", response_model=ReviewState)
+def save_review(extraction_id: str, body: ReviewSaveRequest, request: Request) -> ReviewState:
+    """Persist a card's edited content server-side (audit event: 'edited')."""
+    _require_artifact(extraction_id)
+    stored = inbound_store.save_review(
+        extraction_id=extraction_id,
+        edited_response=body.response,
+        edited_pricing=body.pricing,
+        actor=_actor(request),
+    )
+    return ReviewState(**stored)
+
+
+@router.post("/inbound/review/{extraction_id}/approve", response_model=ReviewState)
+def approve_review(extraction_id: str, body: ApproveRequest, request: Request) -> ReviewState:
+    """Mark a card approved, snapshotting the content the reviewer saw."""
+    _require_artifact(extraction_id)
+    try:
+        stored = inbound_store.set_approval(
+            extraction_id=extraction_id,
+            approved=True,
+            actor=_actor(request),
+            edited_response=body.response,
+            edited_pricing=body.pricing,
+        )
+    except ValueError as exc:
+        # No stored row AND no content in the body — nothing to snapshot.
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_content", "message": str(exc)},
+        ) from exc
+    return ReviewState(**stored)
+
+
+@router.delete("/inbound/review/{extraction_id}/approve", response_model=ReviewState)
+def unapprove_review(extraction_id: str, request: Request) -> ReviewState:
+    """Remove a card's approval (content is left untouched)."""
+    _require_artifact(extraction_id)
+    try:
+        stored = inbound_store.set_approval(
+            extraction_id=extraction_id,
+            approved=False,
+            actor=_actor(request),
+        )
+    except ValueError as exc:
+        # Un-approving a card that has no review row at all.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "review_not_found", "message": f"No review state for '{extraction_id}'."},
+        ) from exc
+    return ReviewState(**stored)
 
 
 # --- POST /api/v1/inbound/export ---------------------------------------------
@@ -947,21 +1036,39 @@ _FLATTEN_NEWLINE_FIELDS = {
 
 
 @router.post("/inbound/export", response_model=ExportResponse, status_code=201)
-def export_inbound(body: ExportRequest) -> ExportResponse:
+def export_inbound(body: ExportRequest, request: Request) -> ExportResponse:
     """
-    Write one CSV row per submitted item to exports/listings_<UTC-timestamp>.csv.
+    Write one CSV row per approved card to exports/listings_<UTC-timestamp>.csv.
 
-    Each item carries its (possibly edited) Gemini response. We flatten the
-    nested response structure into the columns from csv_export_schema.md.
-    Fields that don't exist in our per-image artifact (job_number, item_category,
-    approved_by) are filled from request metadata or left blank.
-
-    No DB writes happen — this is the POC's "save the approved set" action.
+    Phase 7A approval gate: the client sends only extraction_ids. Content
+    comes from the server-stored review snapshots, and every id must already
+    be approved — an unapproved id fails the whole request with 400 (listing
+    the offenders) rather than silently exporting unreviewed content. Each
+    export is recorded in the exports table plus an 'exported' audit event
+    per card.
     """
-    if not body.items:
+    if not body.extraction_ids:
         raise HTTPException(
             status_code=400,
-            detail={"error": "no_items", "message": "Export request must include at least one item."},
+            detail={"error": "no_items", "message": "Export request must include at least one extraction id."},
+        )
+
+    # De-duplicate while preserving order so a glitchy client can't write
+    # the same row twice.
+    requested_ids = list(dict.fromkeys(body.extraction_ids))
+
+    approved = inbound_store.get_approved_reviews(requested_ids)
+    unapproved = [eid for eid in requested_ids if eid not in approved]
+    if unapproved:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "not_approved",
+                "message": (
+                    "These items are not approved and cannot be exported: "
+                    + ", ".join(unapproved)
+                ),
+            },
         )
 
     exported_at = datetime.now(timezone.utc)
@@ -977,35 +1084,58 @@ def export_inbound(body: ExportRequest) -> ExportResponse:
     writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
 
-    for item in body.items:
+    for extraction_id in requested_ids:
+        snapshot = approved[extraction_id]
         row = _build_csv_row(
-            item=item,
-            approved_by=body.approved_by,
+            extraction_id=extraction_id,
+            response=snapshot["edited_response"],
+            pricing=snapshot["edited_pricing"],
+            # Real provenance now — who approved it and when, not "whoever
+            # clicked export at export time".
+            approved_at=snapshot["approved_at_utc"],
+            approved_by=snapshot["approved_by"],
             exported_at_iso=exported_at_iso,
         )
         writer.writerow(row)
 
     csv_path.write_text(buffer.getvalue(), encoding="utf-8", newline="")
 
+    # Provenance: which CSV, how many rows, which cards, who triggered it.
+    inbound_store.record_export(
+        csv_filename=csv_filename,
+        row_count=len(requested_ids),
+        exported_at_utc=exported_at_iso,
+        extraction_ids=requested_ids,
+        actor=_actor(request),
+    )
+
     return ExportResponse(
         # Report the path relative to APP_DATA_PATH so it stays meaningful in
         # both local dev (data dir = repo root) and hosted (data dir = /data).
         csv_path=str(csv_path.relative_to(APP_DATA_PATH)).replace("\\", "/"),
         csv_filename=csv_filename,
-        row_count=len(body.items),
+        row_count=len(requested_ids),
         exported_at_utc=exported_at_iso,
     )
 
 
 # --- CSV row assembly --------------------------------------------------------
 
-def _build_csv_row(item: ExportItem, approved_by: str | None, exported_at_iso: str) -> dict:
+def _build_csv_row(
+    extraction_id: str,
+    response: dict | None,
+    pricing: dict | None,
+    approved_at: str | None,
+    approved_by: str | None,
+    exported_at_iso: str,
+) -> dict:
     """
-    Flatten one ExportItem.response (the nested Gemini shape) into the flat
-    column dict the CSV writer expects. Applies the spec's transformation rules
-    in passing (trim, line-break flatten, blank-normalize).
+    Flatten one approved review snapshot (the nested Gemini shape, possibly
+    human-edited) into the flat column dict the CSV writer expects. Applies
+    the spec's transformation rules in passing (trim, line-break flatten,
+    blank-normalize).
     """
-    response = item.response or {}
+    response = response or {}
     overview = response.get("overview") or {}
     description = response.get("description") or {}
     specs = response.get("specifications") or {}
@@ -1021,7 +1151,7 @@ def _build_csv_row(item: ExportItem, approved_by: str | None, exported_at_iso: s
     # --- Pricing flattening ---
     # The pricing block is optional; when absent every pricing column renders
     # blank (that's the point — mixed-priced/unpriced batches are normal).
-    pricing = item.pricing or {}
+    pricing = pricing or {}
     pricing_platforms = pricing.get("pricing") or {}
     pricing_valuation = pricing.get("market_valuation") or {}
     pricing_sources = pricing.get("sources") or []
@@ -1036,7 +1166,7 @@ def _build_csv_row(item: ExportItem, approved_by: str | None, exported_at_iso: s
 
     raw_row: dict[str, object] = {
         # Identity — extraction_id is our stand-in for job_number in this flow.
-        "job_number": item.extraction_id,
+        "job_number": extraction_id,
         "item_category": "",  # not modeled per-image yet
         # Overview
         "product_name": overview.get("product_name"),
@@ -1079,8 +1209,8 @@ def _build_csv_row(item: ExportItem, approved_by: str | None, exported_at_iso: s
         "market_summary": pricing.get("market_summary"),
         "pricing_sources_json": pricing_sources_json,
         "pricing_fetched_at_utc": pricing.get("fetched_at_utc"),
-        # Provenance
-        "approved_at": exported_at_iso,
+        # Provenance — real approval data from the review row, not export time.
+        "approved_at": approved_at or "",
         "approved_by": approved_by or "",
         "exported_at": exported_at_iso,
     }

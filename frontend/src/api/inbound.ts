@@ -98,6 +98,22 @@ export interface InboundItem {
   response: ListingResponse | null;
   /** Phase 5 pricing block — populated by the same Gemini call that produced the extraction. Null when Gemini returned no pricing. */
   pricing: PricingBlock | null;
+  /**
+   * Phase 7A: server-stored review state (edits + approval), or null when the
+   * card has never been edited or approved. Replaces browser localStorage —
+   * review state now survives across devices and browser resets.
+   */
+  review: ReviewState | null;
+}
+
+/** Server-side review state for one card. Mirrors the backend ReviewState model. */
+export interface ReviewState {
+  edited_response: ListingResponse;
+  edited_pricing: PricingBlock | null;
+  approved: boolean;
+  approved_at_utc: string | null;
+  approved_by: string | null;
+  updated_at_utc: string;
 }
 
 // --- Pricing shapes (Phase 5) ------------------------------------------------
@@ -140,14 +156,6 @@ export interface PricingSource {
 export interface InboundListResponse {
   items: InboundItem[];
   inbound_dir: string;
-}
-
-export interface ExportRequestItem {
-  extraction_id: string;
-  image_files: string[];
-  response: ListingResponse;
-  /** Optional pricing block (possibly edited by the reviewer) included in the exported CSV row. */
-  pricing?: PricingBlock | null;
 }
 
 export interface ExportResponse {
@@ -316,14 +324,71 @@ export async function getExtractionStatus(jobId: string): Promise<ExtractionJob>
   return (await r.json()) as ExtractionJob;
 }
 
-export async function exportInbound(
-  items: ExportRequestItem[],
-  approvedBy?: string
-): Promise<ExportResponse> {
+/**
+ * Save a card's edited content server-side. The server records an 'edited'
+ * audit event and returns the stored review state.
+ */
+export async function saveReview(
+  extractionId: string,
+  response: ListingResponse,
+  pricing: PricingBlock | null,
+): Promise<ReviewState> {
+  const r = await fetch(`${API_BASE}/inbound/review/${encodeURIComponent(extractionId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ response, pricing }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`PUT /inbound/review failed: ${r.status} ${text}`);
+  }
+  return (await r.json()) as ReviewState;
+}
+
+/**
+ * Approve a card. Carries the content currently on screen so the server
+ * snapshots exactly what the reviewer signed off on (audit event: 'approved').
+ */
+export async function approveReview(
+  extractionId: string,
+  response: ListingResponse,
+  pricing: PricingBlock | null,
+): Promise<ReviewState> {
+  const r = await fetch(`${API_BASE}/inbound/review/${encodeURIComponent(extractionId)}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ response, pricing }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`POST /inbound/review/approve failed: ${r.status} ${text}`);
+  }
+  return (await r.json()) as ReviewState;
+}
+
+/** Remove a card's approval (audit event: 'unapproved'). Content untouched. */
+export async function unapproveReview(extractionId: string): Promise<ReviewState> {
+  const r = await fetch(`${API_BASE}/inbound/review/${encodeURIComponent(extractionId)}/approve`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`DELETE /inbound/review/approve failed: ${r.status} ${text}`);
+  }
+  return (await r.json()) as ReviewState;
+}
+
+/**
+ * Export approved cards to CSV. Phase 7A contract: send only the ids — the
+ * server builds the CSV from its stored, approved review snapshots and
+ * rejects any id that isn't approved. Nothing unapproved can be exported.
+ */
+export async function exportInbound(extractionIds: string[]): Promise<ExportResponse> {
   const r = await fetch(`${API_BASE}/inbound/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ items, approved_by: approvedBy ?? null }),
+    body: JSON.stringify({ extraction_ids: extractionIds }),
   });
   if (!r.ok) {
     const text = await r.text();
@@ -340,11 +405,12 @@ export function exportDownloadUrl(csvFilename: string): string {
   return `${API_BASE}/inbound/exports/${encodeURIComponent(csvFilename)}`;
 }
 
-/** Counts of files removed from each managed directory. */
+/** Counts of files removed from each managed directory, plus DB rows wiped. */
 export interface ClearDataResponse {
   input_images_deleted: number;
   inbound_deleted: number;
   exports_deleted: number;
+  db_rows_deleted: number;
 }
 
 /**
