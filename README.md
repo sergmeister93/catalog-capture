@@ -9,16 +9,19 @@ AI-assisted listing workflow for used camera equipment. Reviewer drops photos �
 
 ## Status
 
-**Phases 1–6 complete** (2026-04-19). **Phase 7 open** — candidates tracked in [`docs/claude_code_phase7_handoff.md`](docs/claude_code_phase7_handoff.md).
+**Phases 1–7A complete** (as of 2026-06-12). Hosted on Railway behind Cloudflare Access at `app.catalog-capture.com`.
 
 | Phase | Outcome |
 |---|---|
 | 1 — Contracts & schema | OpenAPI, JSON Schemas, approval rules, CSV + workflow specs authored before code |
-| 2 — Backend (DB pipeline) | FastAPI + PostgreSQL stack with 12 tables, 8 routes, 47/47 tests passing |
+| 2 — Backend (DB pipeline) | FastAPI + PostgreSQL stack — superseded by the inbound pipeline and **removed** after Phase 7A |
 | 3 → 3.5 — Frontend pivot | Moved from "one job = many photos" to "one image = one listing"; built parallel filesystem pipeline |
 | 4 — E2E validation | UI-triggered extraction verified live against Gemini |
 | 5 — Pricing via grounding | Single-pass extraction + pricing, SDK migrated to `google-genai` |
 | 6 — UX rebrand & polish | Catalog Capture brand; enterprise design tokens; drag-and-drop upload |
+| M — Hosted migration | Railway container + volume; Cloudflare Access email allowlist |
+| 7H — Production hardening | CSV-injection escaping, extraction lock, Gemini timeout/retry, upload sniffing, CI, inbound tests |
+| 7A — SQLite durability | Server-side review state + approval audit trail; multi-worker; in-memory job dict retired |
 
 Current state of every phase: [`docs/progress.md`](docs/progress.md).
 
@@ -26,7 +29,7 @@ Current state of every phase: [`docs/progress.md`](docs/progress.md).
 
 ## Quickstart
 
-**Prerequisites:** Python 3.12 (not 3.14 — pinned deps have no wheels for it), Node 18+, Docker (for PostgreSQL, only if using the dormant DB pipeline), a `.env` file at repo root with `GEMINI_API_KEY`.
+**Prerequisites:** Python 3.12 (not 3.14 — pinned deps have no wheels for it), Node 18+, a `.env` file at repo root with `GEMINI_API_KEY`. No database server — durable state is SQLite via the standard library.
 
 ```bash
 # One-click launch (Windows)
@@ -41,16 +44,16 @@ Then:
 3. Review each card on the **Review** screen; edit and approve.
 4. Click **Export Approved Items** → CSV lands in `exports/listings_<UTC>.csv`.
 
-Full reproducible stack setup (Python, Postgres, tests): see the **Phase 2 verified stack** section of [`CLAUDE.md`](CLAUDE.md).
+Tests: `cd backend && pytest` (filesystem + SQLite only, no services needed).
 
 ---
 
 ## Architecture at a glance
 
-- **Frontend** — React 18 + Vite + TypeScript. Three screens (Upload / Review / Batch History) live in `frontend/src/screens/InboundScreen.tsx`. Custom hash router, localStorage-backed edit state.
-- **Backend** — FastAPI (Python 3.12). Active path is filesystem-backed (`/api/v1/inbound/*`) with an in-memory job tracker. A dormant PostgreSQL-backed pipeline (`/jobs/*`, 12 tables, 47/47 tests) is retained for future promotion.
+- **Frontend** — React 18 + Vite + TypeScript. Three screens (Upload / Review / Batch History). Custom hash router; review edits autosave to the server.
+- **Backend** — FastAPI (Python 3.12), single pipeline at `/api/v1/inbound/*`. Extraction artifacts are JSON files (the immutable AI "draft" layer); jobs, review edits, approvals, and the audit trail live in SQLite (`catalog.db`, stdlib `sqlite3`, WAL).
 - **AI** — Google Gemini 2.x via `google-genai` SDK; single multimodal call per image with `types.Tool(google_search=...)` attached for live pricing comps.
-- **Storage** — local filesystem: `input_images/` (raw), `inbound/` (per-image JSON artifacts), `exports/` (CSVs). All gitignored.
+- **Storage** — under `APP_DATA_DIR` (repo root locally, `/data` volume hosted): `input_images/` (raw), `inbound/` (per-image JSON artifacts), `exports/` (CSVs), `catalog.db`. All gitignored.
 
 Presentation-ready diagram: [`docs/system-architecture-diagram.svg`](docs/system-architecture-diagram.svg).
 
@@ -65,16 +68,12 @@ UsedItemsListing_App/
 ├── docs/                  Planning, ADRs, phase handoffs, audit, architecture
 ├── backend/               FastAPI service (src/service_photo/ package)
 │   ├── src/service_photo/
-│   │   ├── api/           inbound_routes.py (active) + routes.py (dormant)
-│   │   ├── services/      inbound_extraction, export_service, + DB services
-│   │   ├── integrations/  real_gemini, mock_gemini, gemini_interface
-│   │   ├── models/        12 SQLAlchemy ORM models (dormant)
-│   │   ├── schemas/       Pydantic request/response shapes
-│   │   ├── repositories/  Data-access layer (dormant)
+│   │   ├── api/           inbound_routes.py — all endpoints
+│   │   ├── services/      inbound_extraction (Gemini runs), inbound_store (SQLite)
+│   │   ├── integrations/  real_gemini, gemini_interface
 │   │   ├── prompts/       listing_extraction_v1.md
-│   │   ├── core/          config.py — .env loader with abs path
-│   │   └── db/            Alembic migrations
-│   └── tests/             unit + integration + E2E (DB pipeline only)
+│   │   └── core/          config.py — settings + .env loader
+│   └── tests/inbound/     pytest suite (filesystem + SQLite, no services)
 ├── frontend/              React SPA (src/screens/, src/api/, src/state/)
 ├── input_images/          Drop photos here (gitignored)
 ├── inbound/               Extraction artifacts (gitignored)
@@ -143,8 +142,7 @@ in front of the Railway URL with an email allowlist.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `GEMINI_API_KEY` | your Google AI Studio key | Required for real Gemini calls |
-| `USE_MOCK_GEMINI` | `false` | Defaults to `true` if you forget — UI will look broken |
+| `GEMINI_API_KEY` | your Google AI Studio key | Required — the inbound flow always calls real Gemini |
 
 ### Optional environment variables
 
@@ -156,24 +154,16 @@ in front of the Railway URL with an email allowlist.
 | `ENV_FILE` | _(unset)_ | Path to a dotenv file if you'd rather load vars from a file |
 | `FRONTEND_DIST_DIR` | `/app/frontend_dist` | Override only if you bake the frontend somewhere else |
 | `PORT` | injected by Railway | uvicorn binds to `${PORT:-8000}` |
+| `WEB_CONCURRENCY` | `2` | uvicorn worker count — safe to raise; job/review state is in SQLite |
 
-`DATABASE_URL` is **not required** — the active `/inbound` pipeline is
-filesystem-backed. The dormant `/jobs` pipeline still imports SQLAlchemy at
-startup but never opens a connection unless those routes are called.
+(`USE_MOCK_GEMINI` and `DATABASE_URL` are no longer read — both belonged to
+the removed `/jobs` pipeline. Leftover values in Railway are ignored.)
 
 ### Volume mount
 
 | Mount path | Purpose |
 |---|---|
-| `/data` | Holds `input_images/`, `inbound/`, and `exports/` so they survive container restarts |
-
-### Single-worker constraint
-
-The Dockerfile launches uvicorn with `--workers 1` deliberately. The active
-inbound pipeline keeps extraction job state in an in-memory `_jobs` dict
-inside `api/inbound_routes.py`. Multiple workers would silently round-robin
-polling requests across processes and break progress reporting. To raise the
-worker count, first promote `_jobs` to durable storage (Phase 7A).
+| `/data` | Holds `input_images/`, `inbound/`, `exports/`, and `catalog.db` so they survive container restarts |
 
 ### Local Docker test
 
@@ -183,7 +173,6 @@ Build and run the same image locally before pushing to Railway:
 docker build -t catalog-capture .
 docker run --rm -p 8000:8000 \
   -e GEMINI_API_KEY=your-key \
-  -e USE_MOCK_GEMINI=false \
   -v "$(pwd)/_local_data:/data" \
   catalog-capture
 # Open http://localhost:8000/
@@ -198,8 +187,8 @@ to `/data` to preview real persistence.
 - **Auth is delegated to Cloudflare Access.** If you expose the Railway URL
   directly without putting CFA (or another reverse-proxy auth layer) in
   front of it, anyone with the URL can extract and export.
-- **Single-user, single-worker.** No concurrency story; Phase 7A is the
-  prereq for scaling beyond one reviewer.
+- **Single-team scale.** Multi-worker is safe (SQLite, WAL), but this is
+  still a one-volume, one-container deployment — not horizontally scalable.
 - **Build context is large.** The Dockerfile copies `backend/src` and
   `frontend/`; `.dockerignore` excludes `node_modules/`, `input_images/`,
   `inbound/`, `exports/`, `storage/`, `test_data/`, and `.env`. If you add
@@ -219,11 +208,10 @@ to `/data` to preview real persistence.
 
 This is a **proof of concept**, not a production system.
 
-- **No authentication.** Anyone who can reach the backend can extract and export.
-- **Single-user assumption.** `input_images/`, `inbound/`, and `exports/` are shared folders.
-- **In-memory job tracker.** A backend restart drops in-flight extraction state (completed artifacts on disk survive).
-- **Windows-first.** `dev.bat` launcher and supporting scripts target Windows; Linux or cloud deployment requires additional work.
-- **No automated tests on the active `/inbound` pipeline.** The 47/47 passing suite covers the dormant DB pipeline.
+- **No in-app authentication.** Hosted access control is Cloudflare Access; the backend trusts every request it receives.
+- **Single-team assumption.** `input_images/`, `inbound/`, and `exports/` are shared folders; there is one review queue, not per-user workspaces.
+- **An in-flight extraction does not survive a restart.** The job record does (SQLite) and flips to `failed` with a clear message, but the Gemini calls themselves are not resumed; completed artifacts on disk survive.
+- **Windows-first local dev.** `dev.bat` launcher and supporting scripts target Windows; the Dockerfile covers Linux/hosted.
 
 Full risk register: [`docs/open-issues-and-risks.md`](docs/open-issues-and-risks.md).
 Path to production: [`docs/production-readiness-assessment.md`](docs/production-readiness-assessment.md).

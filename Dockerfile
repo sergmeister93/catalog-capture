@@ -23,13 +23,16 @@
 #   Without a volume, uploads and CSVs are lost on every redeploy.
 #
 # Required env vars at runtime (set in Railway):
-#   GEMINI_API_KEY   — your Google AI Studio key (real Gemini calls)
-#   USE_MOCK_GEMINI  — "false" for real Gemini, "true" for mock
+#   GEMINI_API_KEY   — your Google AI Studio key
 #   PORT             — Railway injects this; uvicorn binds to it below
 # Optional:
 #   APP_DATA_DIR     — defaults to /data (set here as ENV)
 #   GEMINI_MODEL     — e.g. gemini-2.5-flash
 #   LOG_LEVEL        — INFO (default) / DEBUG
+#   WEB_CONCURRENCY  — uvicorn worker count (default 2)
+# (USE_MOCK_GEMINI is gone — the mock client was removed with the dormant
+#  /jobs pipeline; the inbound flow always calls real Gemini. A leftover
+#  USE_MOCK_GEMINI variable in Railway is ignored and can be deleted.)
 # ---------------------------------------------------------------------------
 
 # ---------- Stage 1: build the React/Vite frontend -------------------------
@@ -59,13 +62,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # OS deps:
-#   - libpq5 supports psycopg2-binary at import time (the dormant /jobs
-#     pipeline still imports SQLAlchemy + psycopg2 at startup, even though
-#     no DB is required for the active /inbound flow).
 #   - tini is a tiny init that reaps zombie processes and forwards signals
 #     correctly so Railway's restart / shutdown flows are clean.
+#   (libpq5 went away with the dormant /jobs pipeline — no Postgres client
+#    is imported anywhere anymore.)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq5 tini \
+ && apt-get install -y --no-install-recommends tini \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps first (better layer caching).
@@ -74,12 +76,13 @@ COPY backend/src ./backend/src
 RUN pip install --upgrade pip \
  && pip install ./backend
 
-# The dormant /jobs pipeline (api/routes.py → submit_service.py) loads
-# contracts/gemini_response_schema.json at import time by walking parent
-# directories. Drop a copy at the filesystem root so the walk finds it
-# regardless of where the package is installed. Cheap (~10 KB), and stops
-# the import chain from blowing up startup even though nothing in the
-# active /inbound flow actually uses these contracts at runtime.
+# The ACTIVE inbound pipeline (services/inbound_extraction.py) validates
+# every Gemini response against contracts/gemini_response_schema.json,
+# located by walking parent directories from the installed package. Drop a
+# copy at the filesystem root so the walk finds it regardless of where the
+# package is installed. (This was originally documented as a dormant-/jobs-
+# pipeline workaround — that was wrong; the live extraction flow reads it
+# on every image. Do not remove.)
 COPY contracts /contracts
 
 # Drop the built frontend in next to the backend.

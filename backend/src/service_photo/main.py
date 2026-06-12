@@ -19,11 +19,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from service_photo.core.config import settings
-# Import the review schemas module first so its bottom-of-file model_rebuild()
-# runs BEFORE api.routes imports trigger FastAPI's @router decorator, which
-# builds a TypeAdapter for ReviewPayload and needs its forward refs resolved.
-from service_photo.schemas import review as _review_schema  # noqa: F401
-from service_photo.api.routes import router
 from service_photo.api.inbound_routes import router as inbound_router
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
@@ -33,10 +28,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Log startup configuration and prepare the SQLite durability layer."""
-    logger.info("Service Photo POC starting up")
-    logger.info("Database: %s", settings.DATABASE_URL.split("@")[-1])
-    logger.info("Gemini mode: %s", "mock" if settings.USE_MOCK_GEMINI else "real")
-    logger.info("Storage path: %s", settings.STORAGE_BASE_PATH)
+    logger.info("Catalog Capture starting up")
     # Create the inbound-pipeline SQLite schema (jobs, review state, audit)
     # up front so the first request doesn't pay the DDL cost and a bad
     # APP_DATA_DIR surfaces as a startup failure, not a mid-session 500.
@@ -54,9 +46,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount all routes under /api/v1 to match the OpenAPI server definition.
-app.include_router(router, prefix="/api/v1")
-# Inbound flow (filesystem-backed, no DB) — same prefix, separate router.
+# Mount the inbound pipeline under /api/v1. (The original DB-backed /jobs
+# router was removed after Phase 7A made it fully redundant.)
 app.include_router(inbound_router, prefix="/api/v1")
 
 

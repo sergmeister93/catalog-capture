@@ -1,19 +1,9 @@
 """
-Gemini integration factory.
+Gemini integration package.
 
-get_gemini_client() returns the correct client based on settings.USE_MOCK_GEMINI.
-Import this from the service layer instead of importing clients directly.
+The active /inbound pipeline imports RealGeminiClient directly (see
+services/inbound_extraction.py) — there is no mock/real factory anymore.
+The MockGeminiClient and its USE_MOCK_GEMINI switch were removed along with
+the dormant /jobs pipeline; inbound tests stub at the run_extraction level
+instead of swapping the client.
 """
-
-from service_photo.integrations.gemini_interface import GeminiClientInterface
-
-
-def get_gemini_client() -> GeminiClientInterface:
-    from service_photo.core.config import settings
-
-    if settings.USE_MOCK_GEMINI:
-        from service_photo.integrations.mock_gemini import MockGeminiClient
-        return MockGeminiClient()
-    else:
-        from service_photo.integrations.real_gemini import RealGeminiClient
-        return RealGeminiClient()
