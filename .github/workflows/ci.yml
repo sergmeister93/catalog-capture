@@ -5,9 +5,8 @@
 # protect the main branch and require both jobs below to pass before merge.
 #
 # Jobs:
-#   backend  — ruff lint + full pytest suite (the 47 legacy /jobs tests need
-#              a real PostgreSQL, provided as a service container; the
-#              /inbound tests are filesystem-only and need nothing).
+#   backend  — ruff lint + pytest (filesystem + SQLite only; the Postgres
+#              service container went away with the dormant /jobs pipeline).
 #   frontend — npm ci + production build (tsc --noEmit runs inside `build`).
 
 name: CI
@@ -24,26 +23,6 @@ jobs:
     defaults:
       run:
         working-directory: backend
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: service_photo_test
-        ports:
-          - 5432:5432
-        # Wait until Postgres actually accepts connections before tests run.
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/service_photo_test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/service_photo_test
-      USE_MOCK_GEMINI: "true"
 
     steps:
       - uses: actions/checkout@v4

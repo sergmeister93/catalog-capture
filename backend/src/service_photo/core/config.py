@@ -5,21 +5,17 @@ Inputs:  environment variables (and optionally an .env file)
 Outputs: a singleton Settings instance at module level
 
 Required env vars:
-  GEMINI_API_KEY    — Google Gemini API key (unused in mock mode)
+  GEMINI_API_KEY    — Google Gemini API key
 
 Optional env vars:
-  DATABASE_URL      — PostgreSQL connection string (only the dormant /jobs
-                      pipeline uses it; the active /inbound pipeline does not)
-  APP_DATA_DIR      — base directory for input_images/, inbound/, exports/.
-                      Defaults to the repo root for local dev. On hosted
-                      deployments (e.g. Railway) point at a persistent
-                      volume like /data.
-  STORAGE_BASE_PATH — legacy alias used by the dormant /jobs pipeline.
+  APP_DATA_DIR      — base directory for input_images/, inbound/, exports/,
+                      and catalog.db. Defaults to the repo root for local
+                      dev. On hosted deployments (e.g. Railway) point at a
+                      persistent volume like /data.
   ENV_FILE          — absolute path to a dotenv file. Overrides the default
                       lookup. Use this on hosted deployments where there is
                       no repo root layout.
   LOG_LEVEL         — Python log level string (default: INFO)
-  USE_MOCK_GEMINI   — set "true" to force mock Gemini client (default: true)
 
 Env-file resolution order:
   1. ENV_FILE env var, if set and the file exists.
@@ -61,28 +57,21 @@ def _resolve_env_file() -> str | None:
 
 
 class Settings(BaseSettings):
-    # --- Database (only used by dormant /jobs pipeline) ---
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/service_photo_dev"
-
     # --- Gemini ---
-    GEMINI_API_KEY: str = "placeholder-not-needed-for-mock"
+    # Placeholder default keeps imports working in test runs that never make
+    # a real API call (inbound tests stub at the run_extraction level).
+    GEMINI_API_KEY: str = "placeholder-not-set"
 
     # --- Storage ---
-    # Base directory for the active inbound pipeline's filesystem state.
+    # Base directory for the inbound pipeline's filesystem state and the
+    # SQLite store (catalog.db).
     # Local default: the repo root (so input_images/, inbound/, exports/
     # land in the repo as they always have).
     # Hosted default (set in the Dockerfile / Railway env): /data.
     APP_DATA_DIR: str = str(_REPO_ROOT_GUESS)
 
-    # Legacy — only the dormant /jobs pipeline reads this.
-    STORAGE_BASE_PATH: str = "./storage"
-
     # --- Logging ---
     LOG_LEVEL: str = "INFO"
-
-    # --- Gemini mode ---
-    # Set USE_MOCK_GEMINI=false in the environment to use the real client.
-    USE_MOCK_GEMINI: bool = True
 
     # --- Gemini call hardening (Phase 7 production-hardening pass) ---
     # Per-request timeout. Grounded (web-search) calls can legitimately take

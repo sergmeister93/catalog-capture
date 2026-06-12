@@ -16,10 +16,9 @@ dependencies = [
     # 2.7.1 pin was held over from the google-generativeai 0.5.x era.
     "pydantic>=2.11",
     "pydantic-settings>=2.2.1",
-    # Database
-    "sqlalchemy==2.0.30",
-    "alembic==1.13.1",
-    "psycopg2-binary==2.9.9",
+    # Note: no database driver. The inbound pipeline's durable state is
+    # stdlib sqlite3 (services/inbound_store.py). The SQLAlchemy/Postgres
+    # stack was removed with the dormant /jobs pipeline.
     # Gemini SDK — the new `google-genai` client, required for native
     # google_search grounding on Gemini 2.x models (Phase 5 single-pass pricing).
     "google-genai>=1.0",

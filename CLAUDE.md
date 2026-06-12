@@ -27,46 +27,32 @@ See [`docs/00_project_documentation.md`](docs/00_project_documentation.md) for f
 
 **Phase 7A (SQLite Durability) — branch `feat/sqlite-durability` (2026-06-12, PR #3 merged earlier same day)** — `services/inbound_store.py` (stdlib sqlite3, WAL mode, file at `<APP_DATA_PATH>/catalog.db`) replaces (a) the in-memory `_jobs` dict and (b) browser-localStorage review state. Five tables: `extraction_jobs`, `extraction_job_images`, `review_items` (JSON-blob edits — draft layer stays as `inbound/*.json` files), `review_events` (append-only audit trail), `exports`. New endpoints: `PUT /inbound/review/{id}`, `POST`/`DELETE /inbound/review/{id}/approve`; `GET /inbound` items now carry a `review` block. **Export contract changed:** client sends `{extraction_ids}` only; the server builds the CSV from stored *approved* snapshots and 400s on any unapproved id — the footer button no longer bulk-approves (gotcha #13 fixed; `approved_at`/`approved_by` CSV columns now carry real approval provenance). Audit actor comes from the `Cf-Access-Authenticated-User-Email` header Cloudflare Access injects (falls back to `local-dev`). Dockerfile runs `--workers ${WEB_CONCURRENCY:-2}` — the single-worker constraint is lifted. Frontend autosaves edits (800 ms debounce, flush on Done Editing / approve / export) and one-time-migrates the old localStorage key server-side, then deletes it.
 
+**Phase 7B (Jobs-Pipeline Removal) — branch `feat/remove-jobs-pipeline` (2026-06-12)** — the dormant `/jobs` Postgres pipeline is **deleted**: `api/routes.py`, `models/`, `repositories/`, `db/` (SQLAlchemy + alembic), `schemas/`, `exports/`, `utils/`, seven DB services, `mock_gemini.py` + the `get_gemini_client` factory, `alembic.ini`, the 47 legacy tests, and the `sqlalchemy`/`alembic`/`psycopg2-binary` deps. CI no longer runs a Postgres service container. `USE_MOCK_GEMINI` and `DATABASE_URL` settings are gone (leftover Railway vars are ignored — `extra="ignore"`). **The `COPY contracts /contracts` Dockerfile step was kept** — gotcha #16's claim that only the dormant pipeline needed it was wrong; the *active* `inbound_extraction.py` validates every Gemini response against `contracts/gemini_response_schema.json` via the same parent-walk.
+
 Full task checklist: [`docs/progress.md`](docs/progress.md)
 
-### The pivot (read this before touching anything)
+### The pivot (historical context)
 
-Mid-Phase-3, the workflow shifted from "one job = one item, multiple photos" to **"one image = one product listing"**. To avoid disturbing the verified DB-backed pipeline, the new flow runs **in parallel** to it:
+Mid-Phase-3, the workflow shifted from "one job = one item, multiple photos" to **"one image = one product listing"**. The original DB-backed `/jobs` pipeline ran dormant alongside the new flow for safety until Phase 7A made it fully redundant; it was deleted in Phase 7B (2026-06-12). There is now exactly one pipeline: `/inbound`.
 
-- **Old `/jobs` pipeline (DB-backed, 8 endpoints, 47/47 tests passing):** untouched but currently dormant in the UI. Code is dead-but-not-deleted.
-- **New `/inbound` pipeline (filesystem-backed, no DB):** powers the active UX. Drop photos → run Gemini per-image → review/edit/approve → bulk export to CSV.
-
-Both pipelines share the same Gemini prompt and CSV column contract.
-
-### Phase 2 verified stack (to reproduce the working state)
+### Local dev stack
 
 - **Python 3.12** (3.14 has no wheels for pinned deps). Install via `winget install Python.Python.3.12`.
-- **PostgreSQL via Docker** — native winget install failed to set a superuser password. Use:
-  ```
-  docker run --name service-photo-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:15
-  ```
-- **Env vars** (cmd):
-  ```
-  set DATABASE_URL=postgresql://postgres:postgres@localhost:5432/service_photo_dev
-  set TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/service_photo_test
-  ```
+- **No database server needed** — durable state is stdlib SQLite (`catalog.db`).
 - **Bootstrap from `backend/`**:
   ```
   py -3.12 -m venv .venv
   .venv\Scripts\activate
   pip install -e ".[dev]"
-  createdb -h localhost -U postgres service_photo_dev
-  createdb -h localhost -U postgres service_photo_test
-  alembic upgrade head
   pytest
   ```
 
-### Bugs fixed during Phase 2 verification (do not reintroduce)
+### Bugs fixed during Phase 2 verification (mostly historical — the /jobs code they lived in was deleted in Phase 7B)
 
-1. **Forward-ref timing** — `ReviewPayload` references `ListingJob` / `ListingJobImage` / `DraftContent` via `TYPE_CHECKING`. The runtime imports + `ReviewPayload.model_rebuild()` **must** live at the bottom of `schemas/review.py`, not in `main.py`. FastAPI's `@router.get(..., response_model=ReviewPayload)` decorator builds a `TypeAdapter` at import time, which requires forward refs already resolved.
-2. **Error response shape** — `main.py` has a custom `HTTPException` handler that unwraps dict `detail` payloads. Routes raise `HTTPException(detail={"error": "...", "message": "..."})` and the handler returns that dict directly (not wrapped in `{"detail": ...}`). The OpenAPI contract + tests depend on this.
-3. **Decimal → JSONB** — `export_service._orm_to_dict` converts `Decimal` to `str` before insertion into the `export_payload_snapshot` JSONB column. Python's stdlib `json.dumps` (which SQLAlchemy uses by default) can't serialize `Decimal`.
-4. **Test fixture transaction** — `tests/conftest.py::override_get_db` must NOT call `db.rollback()` on exception. The outer `db` fixture owns the connection-level transaction; rolling back inside the override wipes state the test itself is reading after a 4xx response.
+1. **Forward-ref timing** (gone with `schemas/review.py`) — pydantic forward refs must be rebuilt before FastAPI's `response_model` decorator builds a TypeAdapter. Pattern worth remembering if `TYPE_CHECKING` refs ever return.
+2. **Error response shape — STILL LIVE.** `main.py` has a custom `HTTPException` handler that unwraps dict `detail` payloads. Routes raise `HTTPException(detail={"error": "...", "message": "..."})` and the handler returns that dict directly (not wrapped in `{"detail": ...}`). The inbound tests depend on this.
+3. **Decimal → JSON** (gone with `export_service`) — stdlib `json.dumps` can't serialize `Decimal`; convert to `str` first.
+4. **Test fixture transaction** (gone with the DB test fixtures) — never roll back inside a dependency override when an outer fixture owns the transaction.
 
 ### Bug fixed during Phase 4 (do not reintroduce)
 
@@ -86,7 +72,7 @@ Both pipelines share the same Gemini prompt and CSV column contract.
 |---|---|
 | `docs/` | Planning + reference docs (numbered `00_`–`03_`), decisions (ADRs), progress tracker, handoff docs |
 | `contracts/` | OpenAPI spec, JSON Schemas, approval rules, workflow spec, Gemini response schema, CSV export spec |
-| `backend/` | FastAPI + PostgreSQL service. Package root: `src/service_photo/`. Old DB pipeline lives in `api/routes.py`; new per-image inbound pipeline lives in `api/inbound_routes.py`. |
+| `backend/` | FastAPI service. Package root: `src/service_photo/`. All endpoints live in `api/inbound_routes.py`; durable state in `services/inbound_store.py` (SQLite). The old DB pipeline was deleted in Phase 7B. |
 | `frontend/` | Vite + React + TS UI. Active screen is `src/screens/InboundScreen.tsx`. Old job/review screens still mounted but unused. |
 | `scripts/run_gemini_extraction.py` | CLI: thin wrapper around `service_photo.services.inbound_extraction`. Self-contained `.env` loader. `--purge` flag wipes prior run JSONs. |
 | `backend/src/service_photo/services/inbound_extraction.py` | Shared extraction service — both the CLI and `POST /inbound/extract` route delegate here. Scans a folder, calls Gemini per image, writes JSONs. Exposes `on_image_start` / `on_image_done` callbacks for progress reporting. |
@@ -95,7 +81,7 @@ Both pipelines share the same Gemini prompt and CSV column contract.
 | `exports/` | Bulk-export CSVs (`listings_<UTC>.csv`). **Gitignored.** Written by `POST /api/v1/inbound/export`. |
 | `dev.bat` | One-click launcher: starts backend + frontend in two cmd windows, opens browser to `#/inbound`. |
 | `extract.bat` | One-click runner for the per-image Gemini extraction script. |
-| `.env` | Repo-root env file (gitignored). Contains `GEMINI_API_KEY`, `GEMINI_MODEL`, `DATABASE_URL`, `USE_MOCK_GEMINI`. |
+| `.env` | Repo-root env file (gitignored). Contains `GEMINI_API_KEY`, `GEMINI_MODEL`. (`DATABASE_URL` / `USE_MOCK_GEMINI` are no longer read — removed in Phase 7B.) |
 | `test_data/sample_images/` | Older sample camera photos (pre-pivot). |
 | `storage/` | Runtime artifacts for the old DB pipeline (gitignored). |
 
@@ -130,22 +116,17 @@ Full tree: [`docs/00_project_documentation.md §12`](docs/00_project_documentati
 
 ---
 
-## Database: 12 Core Tables (Phase 1 scope)
+## Database: SQLite (`catalog.db`, Phase 7A)
 
 ```
-listing_jobs
-listing_job_images
-listing_job_status_history
-listing_draft_overview
-listing_draft_description
-listing_draft_specifications
-listing_draft_accessories
-listing_review_overview          ← required for approval
-listing_review_description       ← required for approval
-listing_review_specifications    ← required for approval (≥1 spec field)
-listing_review_accessories       ← required for approval
-listing_exports
+extraction_jobs          one row per extraction run (replaces the in-memory _jobs dict)
+extraction_job_images    per-image outcomes within a run
+review_items             current review state per card — JSON-blob edits + approval
+review_events            append-only audit trail (edited / approved / unapproved / exported)
+exports                  provenance of every CSV written
 ```
+
+(The original 12-table PostgreSQL design belonged to the deleted `/jobs` pipeline; its DDL spec survives in [`docs/02_physical_schema_spec.md`](docs/02_physical_schema_spec.md) as historical reference.)
 
 ---
 
@@ -183,29 +164,9 @@ Meta sidecar fields (`meta.pricing_fetched_at_utc`, `pricing_web_search_enabled`
 
 CSV now has 9 additional columns (between accessories and provenance): `fair_price`, `deal_threshold`, `ebay_sold_avg`, `mpb_retail`, `keh_retail`, `bh_used`, `market_summary`, `pricing_sources_json`, `pricing_fetched_at_utc`. Sources are flattened to a compact JSON string so downstream tools can parse back.
 
-### Dormant — original DB-backed pipeline (still mounted, currently unused by the UI)
+### Removed — original DB-backed `/jobs` pipeline
 
-```
-POST   /jobs                         create listing job
-POST   /jobs/{id}/images             register job image
-POST   /jobs/{id}/submit             submit to AI (triggers Gemini)
-GET    /jobs/{id}                    get job + images + status history
-GET    /jobs/{id}/review-payload     get draft + review content combined
-PUT    /jobs/{id}/review             save reviewed content (upsert, per-section)
-POST   /jobs/{id}/approve            run approval gate → approved
-POST   /jobs/{id}/export             generate CSV → exported
-```
-
----
-
-## Status Lifecycle
-
-```
-initialized → submitted_to_ai → ai_response_received → ready_for_review
-→ under_review → approved → exported
-
-Exceptions: validation_failed | ai_error | needs_rework | rejected
-```
+Deleted in Phase 7B (2026-06-12) after Phase 7A made it fully redundant. The 8 endpoints, 12 Postgres tables, SQLAlchemy/alembic stack, mock Gemini client, and 47 legacy tests are gone from the codebase; the contracts and DDL specs remain in `contracts/` and `docs/` as historical reference. Git history has the code if it's ever needed.
 
 ---
 
@@ -248,7 +209,7 @@ Phase 6 is closed. Phase 7 is open — see [`docs/claude_code_phase7_handoff.md`
 
 15. **~~Single uvicorn worker is mandatory in the container~~ — lifted in Phase 7A.** Job state now lives in SQLite (`services/inbound_store.py`), so polling works across worker processes. The Dockerfile runs `--workers ${WEB_CONCURRENCY:-2}`. (Historical: the in-memory `_jobs` dict forced `--workers 1` until 2026-06-12.)
 
-16. **The `/jobs` pipeline (dormant) loads `contracts/gemini_response_schema.json` at import time.** `submit_service.py` walks parent dirs from its installed location looking for `contracts/`. The Dockerfile drops a copy at `/contracts` so the walk-up succeeds even though the active `/inbound` flow doesn't need it. If you delete `COPY contracts /contracts` from the Dockerfile, container startup will crash on import.
+16. **`COPY contracts /contracts` in the Dockerfile is needed by the ACTIVE pipeline — do not delete.** This gotcha originally claimed only the dormant `/jobs` pipeline read `contracts/gemini_response_schema.json`; that was wrong. `services/inbound_extraction.py` validates every Gemini response against that schema, locating it by walking parent directories (repo layout locally, `/contracts` in the container). Removing the COPY breaks schema validation on every extraction.
 
 17. **`prompts/*.md` must ship inside the installed package.** `pyproject.toml` declares `[tool.setuptools.package-data] service_photo = ["prompts/*.md", "prompts/*.txt"]`. Without this, `pip install ./backend` strips the prompts dir and the container errors with "Prompt template not found" on the first extraction. `inbound_extraction.py` resolves `PROMPT_PATH` package-relative (parents[1] from the services dir), not repo-relative.
 
