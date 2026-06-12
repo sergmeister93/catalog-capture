@@ -83,13 +83,33 @@ class Settings(BaseSettings):
     # Total attempts = 1 + GEMINI_MAX_RETRIES.
     GEMINI_MAX_RETRIES: int = 2
 
+    # --- Gemini speed/cost tuning (Phase 7 throughput pass) ---
+    # gemini-2.5-flash ships with "dynamic thinking" ON by default: the model
+    # spends an unbounded number of internal reasoning tokens before answering,
+    # which is both slow (often the biggest chunk of a 30s call) and billed at
+    # the output-token rate. For this workload (structured extraction from a
+    # clear product photo) we cap it.
+    #   0  = thinking disabled entirely (fastest, cheapest — the default here)
+    #   >0 = cap thinking at that many tokens (e.g. 512 if pricing quality
+    #        ever looks worse with thinking fully off)
+    #   -1 = restore Gemini's dynamic default (no cap)
+    GEMINI_THINKING_BUDGET: int = 0
+
+    # Longest edge (pixels) an image may have before we downscale it client-side
+    # prior to upload. Professional camera shots are 4000-8000px / multi-MB;
+    # Gemini tiles images into 768px crops, so anything beyond ~2 tiles per edge
+    # buys no extraction accuracy — it just inflates upload time and prompt
+    # tokens. 1536 = two tiles per edge, plenty to read engraved model names.
+    # Set 0 to disable downscaling and send original bytes.
+    GEMINI_MAX_IMAGE_EDGE_PX: int = 1536
+
     # --- Extraction concurrency ---
     # How many images to process in parallel during one extraction run.
     # Each image is an independent Gemini call, so this directly divides
-    # wall-clock time for a batch. Keep modest to stay under Gemini
-    # rate limits (free tier is ~10 RPM for 2.5-flash). 1 = sequential
-    # (the original behavior).
-    EXTRACTION_CONCURRENCY: int = 3
+    # wall-clock time for a batch. Paid-tier 2.5-flash allows ~1000 RPM, so
+    # the real ceiling is far above this; keep it single-digit to stay polite
+    # and leave headroom for retries. 1 = sequential (the original behavior).
+    EXTRACTION_CONCURRENCY: int = 6
 
     model_config = SettingsConfigDict(
         env_file=_resolve_env_file(),

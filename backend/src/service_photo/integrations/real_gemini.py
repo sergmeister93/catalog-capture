@@ -155,15 +155,21 @@ class RealGeminiClient(GeminiClientInterface):
         for path_str in image_paths:
             parts.append(self._image_part(path_str))
 
-        # Only attach the grounding tool when the caller asked for it. An
-        # ungrounded request just passes `config=None` (or no tools) which is
-        # the cheapest/fastest path.
+        # Build the request config. Two independent knobs:
+        #   - tools: attach Google Search grounding only when the caller asked
+        #     for it (Phase 5 combined extraction + pricing).
+        #   - thinking_config: cap/disable Gemini 2.5's default dynamic
+        #     thinking. Left unset, flash spends an unbounded number of
+        #     reasoning tokens per call — slow and billed as output tokens.
+        #     GEMINI_THINKING_BUDGET=-1 restores the SDK default (no cap).
+        config_kwargs: dict = {}
         if enable_web_search:
-            config = types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
+            config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        if settings.GEMINI_THINKING_BUDGET >= 0:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.GEMINI_THINKING_BUDGET,
             )
-        else:
-            config = None
+        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
         response = self._generate_with_retry(parts, config)
 
@@ -254,13 +260,88 @@ class RealGeminiClient(GeminiClientInterface):
                 f"(file: {path.name}). Supported: {sorted(SUPPORTED_IMAGE_MIME_TYPES)}."
             )
 
+        data, mime_type = prepare_image_bytes(
+            path, mime_type, settings.GEMINI_MAX_IMAGE_EDGE_PX
+        )
         return self._types.Part.from_bytes(
-            data=path.read_bytes(),
+            data=data,
             mime_type=mime_type,
         )
 
 
 # ---------------------------------------------------------------- module utils
+
+# JPEG re-encode quality for downscaled images. 85 is visually transparent for
+# product identification; going higher mostly buys file size, not accuracy.
+_DOWNSCALE_JPEG_QUALITY = 85
+
+
+def prepare_image_bytes(path: Path, mime_type: str, max_edge_px: int) -> tuple[bytes, str]:
+    """
+    Read an image file and, if its longest edge exceeds `max_edge_px`,
+    downscale it and re-encode as JPEG before upload.
+
+    Why: camera-grade source photos are 4000-8000px / multi-MB. Gemini tiles
+    images into 768px crops, so resolution beyond ~1536px adds upload time and
+    prompt tokens without improving extraction. Downscaling client-side is the
+    single cheapest way to shrink the request.
+
+    Returns (image_bytes, mime_type) — the mime type changes to image/jpeg
+    when a resize happened, otherwise the original bytes and type pass through
+    untouched.
+
+    Fail-open by design: if Pillow is missing, the format can't be decoded
+    (e.g. HEIC without a plugin), or anything else goes wrong, we log and send
+    the original bytes — a slow call beats a failed one.
+    """
+    original_bytes = path.read_bytes()
+    if max_edge_px <= 0:
+        # Downscaling disabled via settings — send originals.
+        return original_bytes, mime_type
+
+    try:
+        # Lazy import: keeps Pillow optional for code paths that never touch
+        # the real client (tests stub at the extraction-service level).
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(original_bytes)) as img:
+            longest_edge = max(img.size)
+            if longest_edge <= max_edge_px:
+                # Already small enough — don't re-encode (avoids generation
+                # loss and wasted CPU on images that are fine as-is).
+                return original_bytes, mime_type
+
+            # thumbnail() resizes in place, preserving aspect ratio, and only
+            # ever shrinks. LANCZOS keeps engraved text (model names, serials)
+            # crisp at the smaller size.
+            img.thumbnail((max_edge_px, max_edge_px), Image.Resampling.LANCZOS)
+
+            # JPEG can't store alpha; flatten anything exotic (PNG with
+            # transparency, palette images) onto white first.
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=_DOWNSCALE_JPEG_QUALITY)
+            resized_bytes = buffer.getvalue()
+
+        logger.info(
+            "image_downscaled file=%s original_kb=%d resized_kb=%d longest_edge=%d->%d",
+            path.name,
+            len(original_bytes) // 1024,
+            len(resized_bytes) // 1024,
+            longest_edge,
+            max_edge_px,
+        )
+        return resized_bytes, "image/jpeg"
+    except Exception as exc:
+        logger.warning(
+            "image_downscale_failed file=%s (%s) — sending original bytes", path.name, exc
+        )
+        return original_bytes, mime_type
+
 
 def _is_transient_error(exc: Exception) -> bool:
     """

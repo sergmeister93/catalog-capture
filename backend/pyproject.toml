@@ -24,6 +24,10 @@ dependencies = [
     "google-genai>=1.0",
     # JSON Schema validation (for Gemini response)
     "jsonschema==4.22.0",
+    # Image downscaling before Gemini upload (Phase 7 throughput pass).
+    # Camera-grade photos get resized to GEMINI_MAX_IMAGE_EDGE_PX client-side,
+    # cutting upload time and prompt tokens. See real_gemini.prepare_image_bytes.
+    "pillow>=10.0",
 ]
 
 [project.optional-dependencies]
