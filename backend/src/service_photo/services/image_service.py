@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 from service_photo.models.listing_job import ListingJob
 from service_photo.models.listing_job_image import ListingJobImage
 from service_photo.repositories import images as image_repo
-from service_photo.repositories import jobs as job_repo
 from service_photo.schemas.jobs import RegisterImageInput
 
 # Jobs in these statuses cannot have images added.

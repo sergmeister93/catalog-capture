@@ -17,10 +17,8 @@ This test is the definition-of-done check for Phase 1.
 import csv
 import uuid
 
-import pytest
 
 from service_photo.exports.csv_generator import CSV_COLUMNS
-from service_photo.models.listing_job_status_history import ListingJobStatusHistory
 from service_photo.models.listing_draft_overview import ListingDraftOverview
 from sqlalchemy import select
 

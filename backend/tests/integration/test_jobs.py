@@ -1,7 +1,6 @@
 """Integration tests for POST /jobs and GET /jobs/{job_id}."""
 
-import pytest
-from tests.fixtures.factories import scenario_a_initialized, scenario_b_with_images
+from tests.fixtures.factories import scenario_b_with_images
 
 
 def test_create_job_returns_201(client):

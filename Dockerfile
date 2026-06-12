@@ -91,6 +91,12 @@ RUN mkdir -p /data/input_images /data/inbound /data/exports
 
 EXPOSE 8000
 
+# Container-level liveness probe against the app's /healthz endpoint.
+# Uses Python's stdlib (no curl in slim images). start-period covers the
+# uvicorn + import-time startup window.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request,os,sys; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8000\")}/healthz', timeout=4).status == 200 else 1)"
+
 # Single worker is mandatory: api/inbound_routes.py keeps extraction job
 # state in an in-process dict (_jobs). Multiple workers would silently
 # round-robin polling requests across processes and "lose" jobs. If/when

@@ -6,7 +6,7 @@ All functions accept a SQLAlchemy Session and return ORM model instances
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 

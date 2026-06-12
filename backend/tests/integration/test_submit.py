@@ -1,6 +1,5 @@
 """Integration tests for POST /jobs/{job_id}/submit."""
 
-import pytest
 from tests.fixtures.factories import scenario_b_with_images, scenario_a_initialized
 from service_photo.models.listing_job_status_history import ListingJobStatusHistory
 from service_photo.models.listing_draft_overview import ListingDraftOverview

@@ -54,6 +54,15 @@ app.include_router(router, prefix="/api/v1")
 app.include_router(inbound_router, prefix="/api/v1")
 
 
+# Liveness probe for the hosting platform (Railway healthcheck, Docker
+# HEALTHCHECK). Registered BEFORE the SPA catch-all below so it always
+# resolves to this handler. Deliberately does no I/O — it answers "is the
+# process serving requests", not "is every dependency healthy".
+@app.get("/healthz", include_in_schema=False)
+async def healthz() -> dict:
+    return {"status": "ok", "version": app.version}
+
+
 # --- Optional: serve the built frontend from the same origin ----------------
 # In hosted mode (Railway, Docker, etc.) we ship the Vite build alongside the
 # backend so a single uvicorn process serves both /api/* and the SPA. This

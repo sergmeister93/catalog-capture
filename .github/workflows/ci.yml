@@ -1,0 +1,86 @@
+# CI gate for Catalog Capture.
+#
+# Railway auto-deploys main on push, so this workflow is the only thing
+# standing between a bad commit and production. Recommended repo settings:
+# protect the main branch and require both jobs below to pass before merge.
+#
+# Jobs:
+#   backend  — ruff lint + full pytest suite (the 47 legacy /jobs tests need
+#              a real PostgreSQL, provided as a service container; the
+#              /inbound tests are filesystem-only and need nothing).
+#   frontend — npm ci + production build (tsc --noEmit runs inside `build`).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (lint + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: service_photo_test
+        ports:
+          - 5432:5432
+        # Wait until Postgres actually accepts connections before tests run.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/service_photo_test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/service_photo_test
+      USE_MOCK_GEMINI: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend + dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Run tests
+        run: pytest -q
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (includes tsc --noEmit)
+        run: npm run build
