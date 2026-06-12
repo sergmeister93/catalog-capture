@@ -74,7 +74,7 @@ def export_job(
         raise HTTPException(
             status_code=500,
             detail={"error": "export_write_failed", "message": f"Failed to write export file: {exc}"},
-        )
+        ) from exc
 
     # Build the payload snapshot.
     export_snapshot = {

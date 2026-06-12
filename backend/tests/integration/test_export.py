@@ -1,11 +1,8 @@
 """Integration tests for POST /jobs/{job_id}/export."""
 
 import csv
-import os
-import pytest
-from pathlib import Path
 
-from tests.fixtures.factories import scenario_f_approved, scenario_g_exported
+from tests.fixtures.factories import scenario_f_approved
 from service_photo.exports.csv_generator import CSV_COLUMNS
 
 
@@ -102,7 +99,6 @@ def test_export_creates_status_history_row(client, db):
 
 def test_export_payload_snapshot_populated(client, db):
     """listing_exports.export_payload_snapshot must be non-null and contain job data."""
-    from sqlalchemy import select
     from service_photo.models.listing_exports import ListingExport as ListingExportORM
 
     job = scenario_f_approved(db)

@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +41,7 @@ from typing import Callable, Optional
 # before importing us, so these resolve there too.
 from service_photo.integrations.gemini_interface import GeminiClientError
 from service_photo.integrations.real_gemini import RealGeminiClient
+from service_photo.core.config import settings
 
 # --- Constants ---------------------------------------------------------------
 
@@ -195,9 +198,30 @@ def run_extraction(
         model=client.model_name,
     )
 
-    for index, image_path in enumerate(images, start=1):
+    # Process images in parallel — each is an independent Gemini call, so
+    # concurrency divides the batch's wall-clock time. Bounded by
+    # EXTRACTION_CONCURRENCY to stay under Gemini rate limits; 1 reproduces
+    # the original strictly-sequential behavior.
+    #
+    # Thread-safety notes:
+    #   - Each task writes its own artifact file (unique name per image), so
+    #     there is no shared file state between tasks.
+    #   - summary counters and the results list are only touched under
+    #     `summary_lock`.
+    #   - Callbacks fire from worker threads. The HTTP endpoint's callbacks
+    #     already serialize through the _jobs lock; the CLI's print callbacks
+    #     are fine because print() is atomic enough for progress lines.
+    concurrency = max(1, settings.EXTRACTION_CONCURRENCY)
+    total = len(images)
+    summary_lock = threading.Lock()
+    # Pre-size the results list so each task can slot its result at its own
+    # index — keeps summary.results in deterministic filename order even
+    # though tasks finish out of order.
+    ordered_results: list[Optional[ImageResult]] = [None] * total
+
+    def _task(index: int, image_path: Path) -> None:
         if on_image_start:
-            on_image_start(index, len(images), image_path.name)
+            on_image_start(index, total, image_path.name)
 
         result = _process_one_image(
             image_path=image_path,
@@ -208,15 +232,29 @@ def run_extraction(
             batch_name=batch_name,
             batch_started_at_utc=batch_started_at_utc,
         )
-        summary.results.append(result)
-        if result.success:
-            summary.succeeded += 1
-        else:
-            summary.failed += 1
+
+        with summary_lock:
+            ordered_results[index - 1] = result
+            if result.success:
+                summary.succeeded += 1
+            else:
+                summary.failed += 1
 
         if on_image_done:
-            on_image_done(index, len(images), result)
+            on_image_done(index, total, result)
 
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="gemini-img") as pool:
+        futures = [
+            pool.submit(_task, index, image_path)
+            for index, image_path in enumerate(images, start=1)
+        ]
+        # Surface the first task-level exception (if any) instead of
+        # swallowing it — _process_one_image already catches GeminiClientError
+        # per image, so anything propagating here is a genuine bug.
+        for future in futures:
+            future.result()
+
+    summary.results.extend(r for r in ordered_results if r is not None)
     return summary
 
 

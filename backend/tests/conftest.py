@@ -9,7 +9,7 @@ Environment variable DATABASE_URL can override the default test database URL.
 
 import os
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from fastapi.testclient import TestClient
 

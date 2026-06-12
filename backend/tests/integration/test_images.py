@@ -1,6 +1,5 @@
 """Integration tests for POST /jobs/{job_id}/images."""
 
-import pytest
 from tests.fixtures.factories import scenario_a_initialized, scenario_f_approved
 
 

@@ -1,6 +1,5 @@
 """Integration tests for GET /review-payload and PUT /review."""
 
-import pytest
 from tests.fixtures.factories import (
     scenario_c_ready_for_review,
     scenario_d_partial_review,

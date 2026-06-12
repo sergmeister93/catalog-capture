@@ -5,7 +5,6 @@ Tests that _run_approval_validation collects ALL failures in one pass
 without short-circuiting, as required by approval_validation_rules.md.
 """
 
-import pytest
 from tests.fixtures.factories import (
     scenario_e_approval_failure,
     scenario_f_approved,

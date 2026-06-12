@@ -23,7 +23,6 @@ def test_generate_job_number_first_of_day(db):
 
 def test_generate_job_number_increments(db):
     """Sequence increments for each job on the same date."""
-    from service_photo.utils.job_number import generate_job_number
     from service_photo.services.job_service import create_listing_job
 
     # Create two jobs and verify both get sequential numbers.

@@ -29,9 +29,11 @@ Environment:
 """
 
 import json
+import logging
 import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 
 from service_photo.integrations.gemini_interface import (
@@ -47,6 +49,17 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "listing_extraction_v1.
 # Default model. Flash is fast/cheap for iteration; swap to gemini-2.5-pro for
 # the final pass if quality demands it.
 DEFAULT_MODEL = "gemini-2.5-flash"
+
+logger = logging.getLogger(__name__)
+
+# HTTP-ish status codes we treat as transient and worth retrying: rate limit
+# plus the usual server-side hiccups. Anything else (400 bad request, 403 auth)
+# fails immediately — retrying won't fix those.
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Backoff schedule (seconds) between retry attempts. Index = retry number.
+# Kept short — the caller is a user-facing progress UI, not a batch job.
+_RETRY_BACKOFF_SECONDS = [3, 8, 15]
 
 # Image MIME types Gemini's vision models accept. Anything not on this list will
 # be rejected before the API call to avoid wasting a request.
@@ -95,7 +108,14 @@ class RealGeminiClient(GeminiClientInterface):
         # (Part, Tool, GoogleSearch, GenerateContentConfig).
         self._genai = genai
         self._types = genai_types
-        self._client = genai.Client(api_key=api_key)
+        # Client-level timeout so a hung call can't stall an extraction thread
+        # forever. google-genai's HttpOptions.timeout is in MILLISECONDS.
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(
+                timeout=settings.GEMINI_TIMEOUT_SECONDS * 1000,
+            ),
+        )
         # Allow per-instance override; otherwise read from env (GEMINI_MODEL) or use default.
         self._model_name = model_name or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
 
@@ -145,17 +165,7 @@ class RealGeminiClient(GeminiClientInterface):
         else:
             config = None
 
-        try:
-            response = self._client.models.generate_content(
-                model=self._model_name,
-                contents=parts,
-                config=config,
-            )
-        except Exception as exc:
-            # Catch broadly: SDK raises various provider-specific exceptions
-            # (auth, quota, network, safety blocks). Wrap them in our own type
-            # so the caller has a single thing to catch.
-            raise GeminiClientError(f"Gemini API call failed: {exc}") from exc
+        response = self._generate_with_retry(parts, config)
 
         # response.text is a convenience accessor that joins all text parts.
         # If Gemini blocked the response (safety filter, etc.), .text returns
@@ -171,6 +181,62 @@ class RealGeminiClient(GeminiClientInterface):
         return _parse_json_response(raw_text)
 
     # ----------------------------------------------------------------- helpers
+
+    def _generate_with_retry(self, parts: list, config):
+        """
+        Call generate_content, retrying transient failures (rate limit, 5xx,
+        timeout) up to settings.GEMINI_MAX_RETRIES times with a short backoff.
+
+        Non-transient failures (bad request, auth) raise immediately — retrying
+        those just wastes time and quota. Every attempt's outcome is logged so
+        hosted logs show what each image actually cost in attempts and tokens.
+        """
+        max_retries = max(0, settings.GEMINI_MAX_RETRIES)
+        last_exc: Exception | None = None
+
+        for attempt in range(1 + max_retries):
+            t0 = time.perf_counter()
+            try:
+                response = self._client.models.generate_content(
+                    model=self._model_name,
+                    contents=parts,
+                    config=config,
+                )
+            except Exception as exc:
+                last_exc = exc
+                elapsed = time.perf_counter() - t0
+                if attempt < max_retries and _is_transient_error(exc):
+                    delay = _RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)]
+                    logger.warning(
+                        "Gemini call failed (attempt %d/%d, %.1fs): %s — retrying in %ds",
+                        attempt + 1, 1 + max_retries, elapsed, exc, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                # Out of retries, or a non-transient error: wrap and raise so
+                # the caller has a single exception type to catch.
+                raise GeminiClientError(f"Gemini API call failed: {exc}") from exc
+
+            # Success — log usage so token spend per image is visible in
+            # hosted logs (this is the only place cost data surfaces).
+            self._log_usage(response, time.perf_counter() - t0, attempt)
+            return response
+
+        # Defensive: the loop either returns or raises, but keep the type
+        # checker honest about all paths.
+        raise GeminiClientError(f"Gemini API call failed: {last_exc}") from last_exc
+
+    def _log_usage(self, response, elapsed_seconds: float, attempt: int) -> None:
+        """Log one structured line of token usage for a successful call."""
+        usage = getattr(response, "usage_metadata", None)
+        prompt_tokens = getattr(usage, "prompt_token_count", None)
+        output_tokens = getattr(usage, "candidates_token_count", None)
+        total_tokens = getattr(usage, "total_token_count", None)
+        logger.info(
+            "gemini_call_ok model=%s elapsed_s=%.1f attempt=%d prompt_tokens=%s output_tokens=%s total_tokens=%s",
+            self._model_name, elapsed_seconds, attempt + 1,
+            prompt_tokens, output_tokens, total_tokens,
+        )
 
     def _image_part(self, path_str: str):
         """
@@ -195,6 +261,23 @@ class RealGeminiClient(GeminiClientInterface):
 
 
 # ---------------------------------------------------------------- module utils
+
+def _is_transient_error(exc: Exception) -> bool:
+    """
+    Decide whether a Gemini SDK exception is worth retrying.
+
+    google-genai raises google.genai.errors.APIError subclasses that carry a
+    `.code` (HTTP status). Timeouts and connection drops come through as
+    httpx exceptions with no code. We retry on known-transient status codes
+    and on anything that looks like a network/timeout failure.
+    """
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code in _RETRYABLE_STATUS_CODES
+    # No status code — likely a transport-level failure (timeout, reset).
+    # The class name check avoids importing httpx here just for isinstance.
+    name = type(exc).__name__.lower()
+    return any(token in name for token in ("timeout", "connect", "network", "transport"))
 
 # Matches a fenced ```json ... ``` (or plain ``` ... ```) wrapper around the
 # response body. Used defensively — the prompt tells Gemini not to fence.

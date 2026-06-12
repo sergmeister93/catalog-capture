@@ -247,6 +247,41 @@ def list_input_images() -> InputImagesResponse:
 # certainly a mistake (e.g. a raw .ARW/.CR2 file we can't feed to Gemini anyway).
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+# Cap the number of files in a single upload request. Generous for the real
+# workflow (a batch is typically 5-30 photos) while bounding worst-case
+# memory/disk per request.
+_MAX_FILES_PER_UPLOAD = 50
+
+
+def _sniff_image_format(data: bytes) -> str | None:
+    """
+    Identify the actual image format from the file's leading bytes (magic
+    numbers). Returns a short format tag or None if the bytes don't match
+    any format we accept. This is the content-level companion to the
+    extension whitelist — an .exe renamed to .jpg passes the extension
+    check but fails here.
+
+    Formats covered (mirrors IMAGE_SUFFIXES):
+      JPEG       — FF D8 FF
+      PNG        — 89 50 4E 47 0D 0A 1A 0A
+      WebP       — "RIFF" .... "WEBP"
+      HEIC/HEIF  — ISO-BMFF: size + "ftyp" at offset 4, brand in a known set
+    """
+    if len(data) < 12:
+        return None
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand in (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis",
+                     b"mif1", b"msf1", b"avif"):
+            return "heif"
+    return None
+
 
 def _unique_destination(directory: Path, original_name: str) -> Path:
     """
@@ -284,9 +319,21 @@ async def upload_input_images(
     - Filename must be a safe basename (letters, digits, dot, dash, underscore)
       after stripping any directory portion. Anything else is rejected.
     - Extension must be an image suffix we know how to feed to Gemini.
-    - Per-file size capped at _MAX_UPLOAD_BYTES.
+    - File content must pass a magic-byte check for a supported image format
+      (extension alone is spoofable).
+    - Per-file size capped at _MAX_UPLOAD_BYTES; request capped at
+      _MAX_FILES_PER_UPLOAD files.
     - On filename collision, append `-1`, `-2`, … before the suffix.
     """
+    if len(files) > _MAX_FILES_PER_UPLOAD:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "too_many_files",
+                "message": f"At most {_MAX_FILES_PER_UPLOAD} files per upload request.",
+            },
+        )
+
     INPUT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
     results: list[UploadedFileResult] = []
@@ -325,6 +372,18 @@ async def upload_input_images(
                 original_name=original,
                 ok=False,
                 error=f"file exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+            ))
+            continue
+
+        # Content check: the extension whitelist above only inspects the
+        # filename. Verify the leading bytes actually look like an image
+        # format we accept, so arbitrary content can't land on the volume
+        # just by being renamed to .jpg.
+        if _sniff_image_format(data) is None:
+            results.append(UploadedFileResult(
+                original_name=original,
+                ok=False,
+                error="file content does not match a supported image format (JPEG, PNG, WebP, HEIC)",
             ))
             continue
 
@@ -439,7 +498,7 @@ def get_inbound_image(filename: str):
     except AttributeError:
         # Belt-and-suspenders for older Pythons; we target 3.12 so this is dead code.
         if not str(candidate).startswith(str(INPUT_IMAGES_DIR.resolve())):
-            raise HTTPException(status_code=400, detail={"error": "invalid_filename", "message": "Bad path."})
+            raise HTTPException(status_code=400, detail={"error": "invalid_filename", "message": "Bad path."}) from None
 
     if not candidate.is_file():
         raise HTTPException(
@@ -643,7 +702,7 @@ def start_extraction(body: ExtractStartRequest | None = None) -> ExtractStartRes
         raise HTTPException(
             status_code=400,
             detail={"error": "input_folder_missing", "message": str(exc)},
-        )
+        ) from exc
     if not images:
         raise HTTPException(
             status_code=400,
@@ -667,6 +726,27 @@ def start_extraction(body: ExtractStartRequest | None = None) -> ExtractStartRes
         started_at_utc=started_at_utc,
     )
     with _jobs_lock:
+        # Only one extraction may run at a time: the run purges inbound/
+        # before writing, so two concurrent runs would delete each other's
+        # artifacts and double the Gemini spend. Registration and the
+        # active-job check happen under the same lock so two simultaneous
+        # POSTs can't both pass the check.
+        active = next(
+            (j for j in _jobs.values() if j.status in ("queued", "running")),
+            None,
+        )
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "extraction_already_running",
+                    "message": (
+                        "An extraction is already in progress "
+                        f"({active.completed} of {active.total} images done). "
+                        "Wait for it to finish before starting another."
+                    ),
+                },
+            )
         _jobs[job_id] = job
 
     # 3. Spawn a daemon thread — we don't await it, FastAPI returns 202 now.
@@ -732,9 +812,13 @@ def _run_extraction_thread(
                 j.succeeded += 1
             else:
                 j.failed += 1
-            # Clear current_image between images so the UI doesn't show a
-            # stale label during the brief gap before the next call starts.
-            j.current_image = None
+            # Images now run in parallel (EXTRACTION_CONCURRENCY), so another
+            # image's _on_image_start may have already overwritten
+            # current_image. Only clear it when the whole run is done —
+            # mid-run it always points at *some* in-flight image, which is
+            # what the progress banner wants.
+            if j.completed >= j.total:
+                j.current_image = None
         _mutate_job(job_id, apply)
 
     try:
@@ -748,19 +832,25 @@ def _run_extraction_thread(
             batch_started_at_utc=batch_started_at_utc,
         )
     except (GeminiClientError, FileNotFoundError, ImportError) as exc:
-        # Fatal run-level failure — we never got far enough to produce per-image results.
+        # Fatal run-level failure — we never got far enough to produce
+        # per-image results. Capture the message into a plain local before
+        # the lambda: Python unbinds `exc` when the except block exits, so a
+        # lambda closing over `exc` itself only works while called
+        # synchronously — one refactor away from a NameError.
+        error_message = str(exc)
         _mutate_job(
             job_id,
-            lambda j: _set(j, status="failed", error=str(exc), finished_at_utc=_now_iso(), current_image=None),
+            lambda j: _set(j, status="failed", error=error_message, finished_at_utc=_now_iso(), current_image=None),
         )
         return
     except Exception as exc:  # pragma: no cover — last-resort safety net
+        error_message = f"unexpected error: {exc!r}"
         _mutate_job(
             job_id,
             lambda j: _set(
                 j,
                 status="failed",
-                error=f"unexpected error: {exc!r}",
+                error=error_message,
                 finished_at_utc=_now_iso(),
                 current_image=None,
             ),
@@ -999,6 +1089,22 @@ def _build_csv_row(item: ExportItem, approved_by: str | None, exported_at_iso: s
     return {col: _normalize_cell(col, raw_row.get(col)) for col in CSV_COLUMNS}
 
 
+# Leading characters Excel / Sheets / LibreOffice interpret as a formula
+# trigger. Cell text starting with one of these executes when the CSV is
+# opened — and our cell text comes from a web-grounded LLM, so we don't
+# control it. Prefixing a single quote is the standard OWASP mitigation:
+# spreadsheets render the value as plain text (the quote itself is hidden
+# in Excel; tools reading the CSV programmatically see a leading ').
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _escape_spreadsheet_formula(text: str) -> str:
+    """Neutralize CSV formula injection by prefixing risky leading chars."""
+    if text.startswith(_FORMULA_TRIGGER_CHARS):
+        return "'" + text
+    return text
+
+
 def _normalize_cell(column: str, value: object) -> str:
     """
     Apply the CSV spec's transformation rules:
@@ -1006,6 +1112,9 @@ def _normalize_cell(column: str, value: object) -> str:
       - Long-form fields get newlines flattened to single spaces
       - Numbers serialize as plain decimal strings
       - Everything else gets trimmed
+      - Text starting with a formula trigger char (= + - @ tab CR) gets a
+        leading ' so spreadsheet apps treat it as text, never as a formula.
+        Real numbers (int/float) skip this — a negative price is not a formula.
     """
     if value is None:
         return ""
@@ -1015,7 +1124,8 @@ def _normalize_cell(column: str, value: object) -> str:
         return "true" if value else "false"
 
     if isinstance(value, (int, float)):
-        # Plain decimal string, no scientific notation, no units.
+        # Plain decimal string, no scientific notation, no units. Numeric
+        # values are safe by construction — no formula escaping needed.
         if isinstance(value, float) and value.is_integer():
             return str(int(value))
         return str(value)
@@ -1029,4 +1139,4 @@ def _normalize_cell(column: str, value: object) -> str:
         text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
         text = re.sub(r"\s+", " ", text).strip()
 
-    return text
+    return _escape_spreadsheet_formula(text)

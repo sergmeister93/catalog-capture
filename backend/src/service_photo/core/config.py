@@ -84,6 +84,24 @@ class Settings(BaseSettings):
     # Set USE_MOCK_GEMINI=false in the environment to use the real client.
     USE_MOCK_GEMINI: bool = True
 
+    # --- Gemini call hardening (Phase 7 production-hardening pass) ---
+    # Per-request timeout. Grounded (web-search) calls can legitimately take
+    # 60-90s; anything past this is treated as a hung call and aborted so the
+    # extraction job can't wedge at "running" forever.
+    GEMINI_TIMEOUT_SECONDS: int = 150
+    # How many times to re-try a single image's Gemini call after a transient
+    # failure (rate limit, 5xx, timeout) before recording it as failed.
+    # Total attempts = 1 + GEMINI_MAX_RETRIES.
+    GEMINI_MAX_RETRIES: int = 2
+
+    # --- Extraction concurrency ---
+    # How many images to process in parallel during one extraction run.
+    # Each image is an independent Gemini call, so this directly divides
+    # wall-clock time for a batch. Keep modest to stay under Gemini
+    # rate limits (free tier is ~10 RPM for 2.5-flash). 1 = sequential
+    # (the original behavior).
+    EXTRACTION_CONCURRENCY: int = 3
+
     model_config = SettingsConfigDict(
         env_file=_resolve_env_file(),
         env_file_encoding="utf-8",

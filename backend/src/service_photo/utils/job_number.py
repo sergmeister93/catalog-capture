@@ -11,7 +11,6 @@ if a collision occurs (concurrent inserts on the same day), the DB will
 raise an IntegrityError that the caller can retry.
 """
 
-import re
 from datetime import date
 
 from sqlalchemy import func, select
@@ -26,7 +25,7 @@ def generate_job_number(db: Session, for_date: date | None = None) -> str:
 
     Example: JOB-20260419-001
     """
-    from datetime import date as date_type, datetime, timezone
+    from datetime import datetime, timezone
 
     if for_date is None:
         for_date = datetime.now(timezone.utc).date()
