@@ -372,6 +372,18 @@ def _parse_json_response(raw_text: str) -> dict:
     """
     Parse Gemini's text response into a JSON dict, tolerating optional code
     fences. Raises GeminiClientError if the text is not valid JSON.
+
+    Two-stage strategy:
+      1. Strict: strip a well-formed ```json ... ``` wrapper (if any) and parse.
+      2. Lenient fallback: find the first '{' and decode one balanced JSON
+         object from there, ignoring whatever surrounds it. This covers the
+         shapes the strict path misses — an opening fence with no closing
+         fence, prose/sources appended after the closing fence, or a preamble
+         before the JSON. (Observed in practice: with thinking disabled,
+         gemini-2.5-flash is sloppier about fence discipline.)
+
+    Genuinely truncated JSON still fails both stages and raises — we never
+    want a half-parsed listing to look like a successful extraction.
     """
     text = raw_text.strip()
     fence_match = _FENCE_PATTERN.match(text)
@@ -381,13 +393,39 @@ def _parse_json_response(raw_text: str) -> dict:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise GeminiClientError(
-            f"Gemini response was not valid JSON: {exc.msg} "
-            f"(first 200 chars: {text[:200]!r})"
-        ) from exc
+        parsed = _extract_first_json_object(text)
+        if parsed is None:
+            raise GeminiClientError(
+                f"Gemini response was not valid JSON: {exc.msg} "
+                f"(first 200 chars: {text[:200]!r})"
+            ) from exc
+        logger.warning(
+            "gemini_response_needed_lenient_parse — JSON recovered from a "
+            "malformed wrapper (first 80 chars: %r)", raw_text[:80]
+        )
 
     if not isinstance(parsed, dict):
         raise GeminiClientError(
             f"Gemini response parsed to {type(parsed).__name__}, expected dict."
         )
     return parsed
+
+
+def _extract_first_json_object(text: str) -> dict | None:
+    """
+    Lenient recovery: decode the first balanced JSON object found in `text`,
+    ignoring any prefix (e.g. a stray ``` fence line) and any suffix (e.g.
+    trailing prose or an unmatched closing fence).
+
+    Uses json.JSONDecoder.raw_decode, which parses one complete value and
+    stops — so trailing garbage after the object doesn't matter, but a
+    truncated object still fails. Returns None if no parseable object exists.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(text, start)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
